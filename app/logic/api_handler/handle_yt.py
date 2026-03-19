@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from typing import Dict, Any, List, Optional
 import asyncio
 from googleapiclient.errors import HttpError
