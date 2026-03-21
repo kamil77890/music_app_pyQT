@@ -1,205 +1,210 @@
 """
-MainDashboard — Centre column (Discover page).
-Multi-select song cards with Download Selected / Download All buttons.
+MainDashboard — Centre column (Discover page)
+
+Changes
+───────
+  • _ResponsiveSongGrid: cards fill available width, columns auto-calculated
+  • Artist click: safe wrapper prevents errors, uses per-closure name capture
+  • song_card_double_clicked re-added for backward compat (emitted on dbl-click)
+  • Extended/Deluxe albums filtered
+  • Select All toggles
+  • Refresh Picks topbar button
 """
-
 from __future__ import annotations
-
-from typing import Dict, List, Optional
-
+import logging
+from typing import Dict, List
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal
+
+log = logging.getLogger(__name__)
 from PyQt5.QtWidgets import (
     QWidget, QFrame, QVBoxLayout, QHBoxLayout,
-    QLabel, QPushButton, QLineEdit, QScrollArea,
-    QSizePolicy,
+    QLabel, QPushButton, QLineEdit, QScrollArea, QSizePolicy,
 )
-
 from app.desktop.ui.widgets.artist_circle_widget import ArtistCircleWidget
-from app.desktop.ui.widgets.album_card            import AlbumCard
-from app.desktop.utils.helpers                    import get_field
+from app.desktop.ui.widgets.album_card import AlbumCard
+from app.desktop.utils.helpers import get_field
 
+_EXTENDED_KW = frozenset([
+    "extended","deluxe","special edition","expanded",
+    "anniversary edition","remastered edition","complete edition","bonus tracks",
+])
 
-# ─── helpers ──────────────────────────────────────────────────────
+def _is_extended(a):
+    return any(kw in (a.get("title") or "").lower() for kw in _EXTENDED_KW)
 
-def _to_dict(entry) -> dict:
-    if isinstance(entry, dict):
-        return entry
-    if hasattr(entry, "model_dump"):
-        return entry.model_dump()
-    if hasattr(entry, "dict"):
-        return entry.dict()
-    try:
-        return vars(entry)
-    except Exception:
-        return {}
+def _to_dict(entry):
+    if isinstance(entry, dict): return entry
+    for m in ("model_dump","dict"):
+        if hasattr(entry, m): return getattr(entry, m)()
+    try: return vars(entry)
+    except: return {}
 
+def _section_header(title):
+    w = QWidget(); w.setStyleSheet("background:transparent;")
+    row = QHBoxLayout(w); row.setContentsMargins(0,0,0,0)
+    lbl = QLabel(title); lbl.setObjectName("section_title")
+    row.addWidget(lbl); row.addStretch()
+    return w
 
-def _section_row(title: str, show_see_all: bool = True) -> tuple:
-    w = QWidget()
-    w.setStyleSheet("background:transparent;")
-    row = QHBoxLayout(w)
-    row.setContentsMargins(0, 0, 0, 0)
-    lbl = QLabel(title)
-    lbl.setObjectName("section_title")
-    row.addWidget(lbl)
-    row.addStretch()
-    if show_see_all:
-        sa = QLabel("See all")
-        sa.setObjectName("see_all_link")
-        sa.setCursor(Qt.PointingHandCursor)
-        row.addWidget(sa)
-    return w, row
-
-
-def _make_h_scroll(height: int) -> tuple:
-    sa = QScrollArea()
-    sa.setWidgetResizable(True)
+def _make_h_scroll(height):
+    sa = QScrollArea(); sa.setWidgetResizable(True)
     sa.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
     sa.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-    sa.setFrameShape(QFrame.NoFrame)
-    sa.setFixedHeight(height)
+    sa.setFrameShape(QFrame.NoFrame); sa.setFixedHeight(height)
     sa.setStyleSheet("background:transparent;border:none;")
-    inner = QWidget()
-    inner.setStyleSheet("background:transparent;")
-    lay = QHBoxLayout(inner)
-    lay.setContentsMargins(0, 4, 0, 4)
-    lay.setSpacing(16)
-    lay.addStretch()
+    inner = QWidget(); inner.setStyleSheet("background:transparent;")
+    lay = QHBoxLayout(inner); lay.setContentsMargins(0,4,0,4); lay.setSpacing(16); lay.addStretch()
     sa.setWidget(inner)
     return sa, inner, lay
 
 
-# ─── MainDashboard ────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────
+#  Responsive song grid — fills available width
+# ─────────────────────────────────────────────────────────────────
+class _ResponsiveSongGrid(QWidget):
+    """Manual-geometry container: card widths fill the row automatically."""
 
+    MIN_CARD_W = 180
+    CARD_H     = 280
+    SPACING    = 14
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setStyleSheet("background:transparent;")
+        self._cards: list = []
+
+    def set_cards(self, cards: list):
+        for c in self._cards:
+            try: c.setParent(None)
+            except: pass
+        self._cards = list(cards)
+        for c in self._cards:
+            c.setParent(self); c.show()
+        self._relayout()
+
+    def clear(self):
+        for c in self._cards:
+            try: c.deleteLater()
+            except: pass
+        self._cards.clear()
+        self.setMinimumHeight(0); self.setMaximumHeight(16_777_215)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._relayout()
+
+    def _cols(self):
+        return max(1, (max(self.width(),1) + self.SPACING) // (self.MIN_CARD_W + self.SPACING))
+
+    def _card_w(self):
+        cols = self._cols()
+        return max(self.MIN_CARD_W, (self.width() - (cols-1)*self.SPACING) // cols)
+
+    def _relayout(self):
+        if not self._cards:
+            self.setMinimumHeight(0); return
+        cols = self._cols(); cw = self._card_w()
+        for i, card in enumerate(self._cards):
+            row = i//cols; col = i%cols
+            card.setFixedSize(cw, self.CARD_H)
+            card.move(col*(cw+self.SPACING), row*(self.CARD_H+self.SPACING))
+        rows = (len(self._cards)+cols-1)//cols
+        h = rows*self.CARD_H + (rows-1)*self.SPACING + 10
+        self.setMinimumHeight(h); self.setMaximumHeight(h)
+
+
+# ─────────────────────────────────────────────────────────────────
+#  MainDashboard
+# ─────────────────────────────────────────────────────────────────
 class MainDashboard(QWidget):
-    """
-    Signals
-    -------
-    search_submitted(query: str)
-    song_card_double_clicked(file_path: str, metadata: dict)
-    song_card_download_clicked(entry: object)   single ▶ button
-    download_selected_clicked(songs: list)       selected cards
-    download_all_clicked(songs: list)            all visible cards
-    album_clicked(playlist_id: str)
-    artist_clicked(artist_name: str)
-    hero_play_clicked()
-    """
-
     search_submitted           = pyqtSignal(str)
-    song_card_double_clicked   = pyqtSignal(str, dict)
+    song_card_double_clicked   = pyqtSignal(str, dict)   # backward compat
     song_card_download_clicked = pyqtSignal(object)
     download_selected_clicked  = pyqtSignal(list)
     download_all_clicked       = pyqtSignal(list)
     album_clicked              = pyqtSignal(str)
     artist_clicked             = pyqtSignal(str)
-    hero_play_clicked          = pyqtSignal()
+    refresh_requested          = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._song_cards: list       = []
-        self._selected_entries: list = []   # plain dicts
-
+        self._song_cards:  list = []
+        self._all_entries: list = []
+        self._selected:    list = []
+        self._all_selected       = False
         self._search_timer = QTimer(self)
         self._search_timer.setSingleShot(True)
         self._search_timer.setInterval(500)
         self._search_timer.timeout.connect(self._submit_search)
-
         self._build_ui()
 
     # ── build ──────────────────────────────────────────────────
 
     def _build_ui(self):
         root = QVBoxLayout(self)
-        root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(0)
-
+        root.setContentsMargins(0,0,0,0); root.setSpacing(0)
         root.addWidget(self._build_topbar())
 
-        body_scroll = QScrollArea()
-        body_scroll.setWidgetResizable(True)
+        body_scroll = QScrollArea(); body_scroll.setWidgetResizable(True)
         body_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         body_scroll.setFrameShape(QFrame.NoFrame)
         body_scroll.setStyleSheet("background:transparent;border:none;")
 
-        body = QWidget()
-        body.setStyleSheet("background:transparent;")
-        body_lay = QVBoxLayout(body)
-        body_lay.setContentsMargins(24, 20, 24, 20)
-        body_lay.setSpacing(20)
+        body = QWidget(); body.setStyleSheet("background:transparent;")
+        blay = QVBoxLayout(body)
+        blay.setContentsMargins(24,20,24,20); blay.setSpacing(20)
 
-        # ── Daily Artists (hidden until real data) ──
-        self._artists_hdr, _ = _section_row("Daily Artists")
+        # Artists
+        self._artists_hdr = _section_header("Daily Artists")
         self._artists_hdr.setVisible(False)
-        body_lay.addWidget(self._artists_hdr)
-
-        self._artists_sa, self._artists_inner, self._artists_lay = \
-            _make_h_scroll(130)
+        blay.addWidget(self._artists_hdr)
+        self._artists_sa, self._artists_inner, self._artists_lay = _make_h_scroll(130)
         self._artists_sa.setVisible(False)
-        body_lay.addWidget(self._artists_sa)
+        blay.addWidget(self._artists_sa)
 
-        # ── Album shelf ──
-        self._album_hdr, _ = _section_row("Albums & Playlists",
-                                           show_see_all=False)
-        self._album_hdr.setVisible(False)
-        body_lay.addWidget(self._album_hdr)
-
-        self._album_scroll = QScrollArea()
-        self._album_scroll.setWidgetResizable(True)
+        # Albums
+        self._album_hdr = _section_header("Albums & Playlists")
+        self._album_hdr.setVisible(False); blay.addWidget(self._album_hdr)
+        self._album_scroll = QScrollArea(); self._album_scroll.setWidgetResizable(True)
         self._album_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self._album_scroll.setFrameShape(QFrame.NoFrame)
         self._album_scroll.setStyleSheet("background:transparent;border:none;")
         self._album_scroll.setVisible(False)
-
-        self._album_inner = QWidget()
-        self._album_inner.setStyleSheet("background:transparent;")
+        self._album_inner = QWidget(); self._album_inner.setStyleSheet("background:transparent;")
         self._album_inner_lay = QVBoxLayout(self._album_inner)
-        self._album_inner_lay.setContentsMargins(0, 0, 0, 0)
-        self._album_inner_lay.setSpacing(8)
+        self._album_inner_lay.setContentsMargins(0,0,0,0); self._album_inner_lay.setSpacing(8)
         self._album_scroll.setWidget(self._album_inner)
-        body_lay.addWidget(self._album_scroll)
+        blay.addWidget(self._album_scroll)
 
-        # ── Search Results header + action bar ──
-        songs_hdr_wrap = QWidget()
-        songs_hdr_wrap.setStyleSheet("background:transparent;")
-        songs_hdr_row = QHBoxLayout(songs_hdr_wrap)
-        songs_hdr_row.setContentsMargins(0, 0, 0, 0)
-        songs_hdr_row.setSpacing(8)
+        # Songs header + action bar
+        shw = QWidget(); shw.setStyleSheet("background:transparent;")
+        shr = QHBoxLayout(shw); shr.setContentsMargins(0,0,0,0); shr.setSpacing(8)
+        shr.addWidget(_section_header("Search Results"), 1)
 
-        _sl, _ = _section_row("Search Results", show_see_all=False)
-        songs_hdr_row.addWidget(_sl, 1)
-
-        # action bar (hidden until results)
-        self._action_bar = QWidget()
-        self._action_bar.setStyleSheet("background:transparent;")
+        self._action_bar = QWidget(); self._action_bar.setStyleSheet("background:transparent;")
         self._action_bar.setVisible(False)
-        ab_lay = QHBoxLayout(self._action_bar)
-        ab_lay.setContentsMargins(0, 0, 0, 0)
-        ab_lay.setSpacing(8)
+        ab = QHBoxLayout(self._action_bar); ab.setContentsMargins(0,0,0,0); ab.setSpacing(8)
 
-        self._sel_all_btn = QPushButton("Select All")
-        self._sel_all_btn.setFixedHeight(32)
+        self._sel_all_btn = QPushButton("Select All"); self._sel_all_btn.setFixedHeight(32)
         self._sel_all_btn.setStyleSheet(
-            "QPushButton{background:#1e1e38;border:1px solid #2a2a50;"
-            "border-radius:8px;color:#e8eaf0;font-size:11px;"
-            "font-weight:700;padding:0 12px;}"
-            "QPushButton:hover{background:#2a2a50;}")
-        self._sel_all_btn.clicked.connect(self._select_all)
-        ab_lay.addWidget(self._sel_all_btn)
+            "QPushButton{background:#1e1e38;border:1px solid #2a2a50;border-radius:8px;"
+            "color:#e8eaf0;font-size:11px;font-weight:700;padding:0 12px;}"
+            "QPushButton:hover{background:#2a2a50;}"
+            "QPushButton[active='true']{background:#4d59fb;border-color:#4d59fb;color:#fff;}")
+        self._sel_all_btn.clicked.connect(self._toggle_select_all)
+        ab.addWidget(self._sel_all_btn)
 
-        self._dl_sel_btn = QPushButton("⬇ Download Selected (0)")
-        self._dl_sel_btn.setFixedHeight(32)
+        self._dl_sel_btn = QPushButton("⬇ Download Selected (0)"); self._dl_sel_btn.setFixedHeight(32)
         self._dl_sel_btn.setEnabled(False)
         self._dl_sel_btn.setStyleSheet(
-            "QPushButton{background:#1e1e38;border:1px solid #2a2a50;"
-            "border-radius:8px;color:#9395a5;font-size:11px;"
-            "font-weight:700;padding:0 12px;}"
+            "QPushButton{background:#1e1e38;border:1px solid #2a2a50;border-radius:8px;"
+            "color:#9395a5;font-size:11px;font-weight:700;padding:0 12px;}"
             "QPushButton:disabled{color:#3a3a55;border-color:#1e1e38;}"
             "QPushButton:enabled:hover{background:#2a2a50;color:#e8eaf0;}")
         self._dl_sel_btn.clicked.connect(self._emit_download_selected)
-        ab_lay.addWidget(self._dl_sel_btn)
+        ab.addWidget(self._dl_sel_btn)
 
-        self._dl_all_btn = QPushButton("⬇ Download All")
-        self._dl_all_btn.setFixedHeight(32)
+        self._dl_all_btn = QPushButton("⬇ Download All"); self._dl_all_btn.setFixedHeight(32)
         self._dl_all_btn.setStyleSheet(
             "QPushButton{background:qlineargradient(x1:0,y1:0,x2:1,y2:1,"
             "stop:0 #4d59fb,stop:1 #6c3aef);border:none;border-radius:8px;"
@@ -207,293 +212,242 @@ class MainDashboard(QWidget):
             "QPushButton:hover{background:qlineargradient(x1:0,y1:0,x2:1,y2:1,"
             "stop:0 #5e6aff,stop:1 #7a4aff);}")
         self._dl_all_btn.clicked.connect(self._emit_download_all)
-        ab_lay.addWidget(self._dl_all_btn)
+        ab.addWidget(self._dl_all_btn)
 
-        songs_hdr_row.addWidget(self._action_bar)
-        body_lay.addWidget(songs_hdr_wrap)
+        shr.addWidget(self._action_bar); blay.addWidget(shw)
 
-        # song cards horizontal scroll
-        self._songs_sa, self._songs_inner, self._songs_lay = \
-            _make_h_scroll(290)
-        body_lay.addWidget(self._songs_sa)
+        # Responsive song grid
+        self._songs_scroll = QScrollArea(); self._songs_scroll.setWidgetResizable(True)
+        self._songs_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._songs_scroll.setFrameShape(QFrame.NoFrame)
+        self._songs_scroll.setStyleSheet("background:transparent;border:none;")
+        self._songs_scroll.setVisible(False)
+        self._song_grid = _ResponsiveSongGrid()
+        self._songs_scroll.setWidget(self._song_grid)
+        blay.addWidget(self._songs_scroll, 1)
 
-        # status / empty state
-        self._status_lbl = QLabel(
-            "Search for songs, artists or playlists above.")
-        self._status_lbl.setObjectName("empty_state")
-        self._status_lbl.setAlignment(Qt.AlignCenter)
-        body_lay.addWidget(self._status_lbl)
+        self._status_lbl = QLabel("Search for songs, artists or playlists above.")
+        self._status_lbl.setObjectName("empty_state"); self._status_lbl.setAlignment(Qt.AlignCenter)
+        blay.addWidget(self._status_lbl)
+        blay.addStretch()
+        body_scroll.setWidget(body); root.addWidget(body_scroll, 1)
 
-        body_lay.addStretch()
-        body_scroll.setWidget(body)
-        root.addWidget(body_scroll, 1)
+    def _build_topbar(self):
+        bar = QFrame(); bar.setObjectName("topbar"); bar.setFixedHeight(64)
+        lay = QHBoxLayout(bar); lay.setContentsMargins(24,0,24,0); lay.setSpacing(12)
 
-    def _build_topbar(self) -> QFrame:
-        bar = QFrame()
-        bar.setObjectName("topbar")
-        bar.setFixedHeight(64)
-
-        lay = QHBoxLayout(bar)
-        lay.setContentsMargins(24, 0, 24, 0)
-        lay.setSpacing(12)
-
-        sc = QFrame()
-        sc.setObjectName("search_container")
-        sc.setFixedHeight(44)
+        sc = QFrame(); sc.setObjectName("search_container"); sc.setFixedHeight(44)
         sc.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        sc_lay = QHBoxLayout(sc)
-        sc_lay.setContentsMargins(14, 0, 6, 0)
-        sc_lay.setSpacing(6)
-
-        search_icon = QLabel("🔍")
-        search_icon.setStyleSheet(
-            "color:#404060;font-size:14px;background:transparent;")
-        sc_lay.addWidget(search_icon)
-
-        self._search_input = QLineEdit()
-        self._search_input.setObjectName("search_input")
-        self._search_input.setPlaceholderText(
-            "Search songs, artists, playlists…")
+        sl = QHBoxLayout(sc); sl.setContentsMargins(14,0,6,0); sl.setSpacing(6)
+        si = QLabel("🔍"); si.setStyleSheet("color:#404060;font-size:14px;background:transparent;")
+        sl.addWidget(si)
+        self._search_input = QLineEdit(); self._search_input.setObjectName("search_input")
+        self._search_input.setPlaceholderText("Search songs, artists, playlists…")
         self._search_input.setFrame(False)
-        self._search_input.textChanged.connect(
-            lambda: self._search_timer.start())
+        self._search_input.setStyleSheet(
+            "QLineEdit{font-family:'JetBrains Mono','Fira Code','Cascadia Code','Consolas',monospace;"
+            "font-size:14px;font-style:italic;letter-spacing:0.3px;color:#e8eaf0;"
+            "background:transparent;border:none;}")
+        self._search_input.textChanged.connect(lambda: self._search_timer.start())
         self._search_input.returnPressed.connect(self._submit_search)
-        sc_lay.addWidget(self._search_input, 1)
-
-        go_btn = QPushButton("→")
-        go_btn.setObjectName("search_go_btn")
-        go_btn.setFixedSize(40, 40)
-        go_btn.clicked.connect(self._submit_search)
-        sc_lay.addWidget(go_btn)
-
+        sl.addWidget(self._search_input, 1)
+        go = QPushButton("→"); go.setObjectName("search_go_btn"); go.setFixedSize(40,40)
+        go.clicked.connect(self._submit_search); sl.addWidget(go)
         lay.addWidget(sc, 1)
 
-        for label in ("Chart", "Music Challenges"):
-            btn = QPushButton(label)
-            btn.setObjectName("topbar_link")
-            lay.addWidget(btn)
-
+        chart = QPushButton("Chart"); chart.setObjectName("topbar_link"); lay.addWidget(chart)
+        rfr = QPushButton("🔄 Refresh Picks"); rfr.setObjectName("topbar_link")
+        rfr.setToolTip("Refresh recommendations from your library")
+        rfr.clicked.connect(self.refresh_requested); lay.addWidget(rfr)
         lay.addSpacing(8)
-
-        for icon, tip in [("⚙", "Settings"), ("🔔", "Notifications"),
-                          ("💬", "Messages")]:
-            b = QPushButton(icon)
-            b.setObjectName("icon_btn")
-            b.setToolTip(tip)
-            lay.addWidget(b)
-
-        add_b = QPushButton("+")
-        add_b.setObjectName("add_btn")
-        add_b.setToolTip("Add")
-        lay.addWidget(add_b)
-
+        for icon, tip in [("⚙","Settings"),("🔔","Notifications"),("💬","Messages")]:
+            b = QPushButton(icon); b.setObjectName("icon_btn"); b.setToolTip(tip); lay.addWidget(b)
+        add = QPushButton("+"); add.setObjectName("add_btn"); lay.addWidget(add)
         return bar
 
-    # ── search ─────────────────────────────────────────────────
+    # ── search ──────────────────────────────────────────────────
 
     def _submit_search(self):
-        text = self._search_input.text().strip()
-        if text:
-            self.search_submitted.emit(text)
+        t = self._search_input.text().strip()
+        if t: self.search_submitted.emit(t)
 
-    # ── public update API ──────────────────────────────────────
+    # ── public API ───────────────────────────────────────────────
 
-    def set_search_results(
-        self,
-        songs: list,
-        albums: List[Dict],
-        playlists: List[Dict],
-    ) -> None:
-        songs_dicts = [_to_dict(s) for s in songs]
-        self._update_song_cards(songs_dicts)
-        self._update_album_shelf(albums + playlists)
-        self.set_artists(self._extract_artists(songs_dicts))
+    def set_search_results(self, songs, albums, playlists, artist_filter=None):
+        dicts = [_to_dict(s) for s in songs]
+        combined_albums = list(albums) + list(playlists)
+        if artist_filter:
+            af = artist_filter.lower().strip()
 
-    def show_loading(self, message: str = "Searching…") -> None:
-        self._status_lbl.setText(message)
-        self._status_lbl.setVisible(True)
-        self._songs_sa.setVisible(False)
-        self._action_bar.setVisible(False)
-        self._clear_cards()
+            def _song_match(d):
+                art = (get_field(d, "artist", "") or get_field(d, "channelTitle", "") or "")
+                return af in art.lower()
 
-    def get_search_text(self) -> str:
+            def _alb_match(a):
+                art = (a.get("artist") or
+                       (a.get("snippet") or {}).get("channelTitle") or "")
+                return af in art.lower()
+
+            dicts = [d for d in dicts if _song_match(d)]
+            combined_albums = [a for a in combined_albums if _alb_match(a)]
+        self._update_song_grid(dicts)
+        self._update_album_shelf(combined_albums)
+
+    def set_daily_artists_from_library(self, artists: List[Dict]):
+        """Daily Artists row — from local library counts, not from YouTube search."""
+        self.set_artists(artists)
+
+    def show_loading(self, message="Searching…"):
+        self._status_lbl.setText(message); self._status_lbl.setVisible(True)
+        self._songs_scroll.setVisible(False); self._action_bar.setVisible(False)
+        self._clear_grid()
+
+    def get_search_text(self):
         return self._search_input.text()
 
-    # ── song cards ─────────────────────────────────────────────
+    # ── song grid ────────────────────────────────────────────────
 
-    def _clear_cards(self):
-        for card in self._song_cards:
-            try:
-                card.setParent(None)
-                card.deleteLater()
-            except Exception:
-                pass
-        self._song_cards.clear()
-        self._selected_entries.clear()
-        self._update_dl_btn()
+    def _clear_grid(self):
+        self._song_grid.clear(); self._song_cards.clear()
+        self._all_entries.clear(); self._selected.clear()
+        self._all_selected = False
+        self._update_sel_btn_label(); self._update_dl_btn()
 
-        while self._songs_lay.count() > 1:
-            item = self._songs_lay.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
-
-    def _update_song_cards(self, songs: List[Dict]) -> None:
-        self._clear_cards()
-
+    def _update_song_grid(self, songs):
+        self._clear_grid()
         if not songs:
-            self._status_lbl.setText("No results found.")
-            self._status_lbl.setVisible(True)
-            self._songs_sa.setVisible(False)
-            self._action_bar.setVisible(False)
-            return
+            self._status_lbl.setText("No results found."); self._status_lbl.setVisible(True)
+            self._songs_scroll.setVisible(False); self._action_bar.setVisible(False); return
 
         self._status_lbl.setVisible(False)
-        self._songs_sa.setVisible(True)
-        self._action_bar.setVisible(True)
+        self._songs_scroll.setVisible(True); self._action_bar.setVisible(True)
+        self._all_entries = list(songs)
 
+        from app.desktop.ui.widgets.song_card import SongCard
         for entry in songs:
             try:
-                from app.desktop.ui.widgets.song_card import SongCard
-                entry_dict = _to_dict(entry)
-                card = SongCard(entry_dict)
-                card._entry_dict = entry_dict   # stash for selection
-
-                # ▶ button → single download
+                card = SongCard(entry); card._entry_dict = entry
+                # ▶ = download
                 card.play_btn.clicked.connect(
-                    lambda _, e=entry_dict:
-                        self.song_card_download_clicked.emit(e)
-                )
-
-                # card body click → toggle selection
-                _orig_press = card.mousePressEvent
-                def _make_toggle(c=card, ed=entry_dict, orig=_orig_press):
-                    def _press(ev):
-                        if ev.button() == Qt.LeftButton:
-                            self._toggle_card(c, ed)
-                        orig(ev)
-                    return _press
-                card.mousePressEvent = _make_toggle()
-
-                self._songs_lay.insertWidget(
-                    self._songs_lay.count() - 1, card)
+                    lambda _, e=entry: self.song_card_download_clicked.emit(e))
+                # click = toggle select
+                orig = card.mousePressEvent
+                def _h(ev, c=card, ed=entry, o=orig):
+                    if ev.button() == Qt.LeftButton: self._toggle_card(c, ed)
+                    o(ev)
+                card.mousePressEvent = _h
+                # double-click = play
+                def _dbl(ev, fp=entry.get("file_path",""), ed=entry):
+                    if ev.button() == Qt.LeftButton and fp:
+                        self.song_card_double_clicked.emit(fp, ed)
+                card.mouseDoubleClickEvent = _dbl
                 self._song_cards.append(card)
             except Exception as exc:
-                print(f"[MainDashboard] card error: {exc}")
+                log.warning("Song card creation error: %s", exc)
+        self._song_grid.set_cards(self._song_cards)
 
-    # ── selection ──────────────────────────────────────────────
+    # ── selection ────────────────────────────────────────────────
 
-    def _toggle_card(self, card, entry_dict: dict):
-        if entry_dict in self._selected_entries:
-            self._selected_entries.remove(entry_dict)
-            card.set_selected(False)
+    def _toggle_card(self, card, entry):
+        if entry in self._selected:
+            self._selected.remove(entry); card.set_selected(False)
         else:
-            self._selected_entries.append(entry_dict)
-            card.set_selected(True)
-        self._update_dl_btn()
+            self._selected.append(entry); card.set_selected(True)
+        self._all_selected = len(self._selected) == len(self._all_entries) > 0
+        self._update_sel_btn_label(); self._update_dl_btn()
 
-    def _select_all(self):
-        self._selected_entries.clear()
-        for card in self._song_cards:
-            ed = getattr(card, "_entry_dict", None)
-            if ed:
-                self._selected_entries.append(ed)
-                card.set_selected(True)
-        self._update_dl_btn()
+    def _toggle_select_all(self):
+        if self._all_selected:
+            self._selected.clear()
+            for c in self._song_cards: c.set_selected(False)
+            self._all_selected = False
+        else:
+            self._selected = list(self._all_entries)
+            for c in self._song_cards: c.set_selected(True)
+            self._all_selected = True
+        self._update_sel_btn_label(); self._update_dl_btn()
+
+    def _update_sel_btn_label(self):
+        if self._all_selected:
+            self._sel_all_btn.setText("Deselect All"); self._sel_all_btn.setProperty("active","true")
+        else:
+            self._sel_all_btn.setText("Select All"); self._sel_all_btn.setProperty("active","false")
+        self._sel_all_btn.style().unpolish(self._sel_all_btn)
+        self._sel_all_btn.style().polish(self._sel_all_btn)
 
     def _update_dl_btn(self):
-        n = len(self._selected_entries)
+        n = len(self._selected)
         self._dl_sel_btn.setText(f"⬇ Download Selected ({n})")
         self._dl_sel_btn.setEnabled(n > 0)
 
     def _emit_download_selected(self):
-        if self._selected_entries:
-            self.download_selected_clicked.emit(list(self._selected_entries))
+        if self._selected: self.download_selected_clicked.emit(list(self._selected))
 
     def _emit_download_all(self):
-        all_e = [getattr(c, "_entry_dict", None) for c in self._song_cards]
-        all_e = [e for e in all_e if e]
-        if all_e:
-            self.download_all_clicked.emit(all_e)
+        if self._all_entries: self.download_all_clicked.emit(list(self._all_entries))
 
-    # ── album shelf ────────────────────────────────────────────
+    # ── album shelf ──────────────────────────────────────────────
 
-    def _update_album_shelf(self, albums: List[Dict]) -> None:
+    def _update_album_shelf(self, albums):
         while self._album_inner_lay.count():
             item = self._album_inner_lay.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
-
-        if not albums:
-            self._album_hdr.setVisible(False)
-            self._album_scroll.setVisible(False)
-            return
-
-        self._album_hdr.setVisible(True)
-        self._album_scroll.setVisible(True)
-        self._album_scroll.setFixedHeight(min(len(albums), 3) * 95 + 10)
-
-        for a in albums:
-            card = AlbumCard(
-                playlist_id   = a["playlist_id"],
-                title         = a["title"],
-                artist        = a["artist"],
-                track_count   = a["track_count"],
-                album_type    = a["album_type"],
-                thumbnail_url = a["thumbnail_url"],
-            )
-            card.album_clicked.connect(self.album_clicked)
-            card.play_all_requested.connect(self.album_clicked)
-            self._album_inner_lay.addWidget(card)
-
+            if item.widget(): item.widget().deleteLater()
+        filtered = [a for a in albums if not _is_extended(a)]
+        if not filtered:
+            self._album_hdr.setVisible(False); self._album_scroll.setVisible(False); return
+        self._album_hdr.setVisible(True); self._album_scroll.setVisible(True)
+        self._album_scroll.setFixedHeight(min(len(filtered),3)*98+10)
+        for a in filtered:
+            try:
+                card = AlbumCard(playlist_id=a.get("playlist_id",""),title=a.get("title",""),
+                    artist=a.get("artist",""),track_count=a.get("track_count",0),
+                    album_type=a.get("album_type","ALBUM"),thumbnail_url=a.get("thumbnail_url",""))
+                card.album_clicked.connect(self.album_clicked)
+                self._album_inner_lay.addWidget(card)
+            except Exception as exc: log.warning("Album card creation error: %s", exc)
         self._album_inner_lay.addStretch()
 
-    def update_album_card_tracks(
-        self, playlist_id: str, tracks: List[Dict]
-    ) -> None:
+    def update_album_card_tracks(self, playlist_id, tracks):
         for i in range(self._album_inner_lay.count()):
             w = self._album_inner_lay.itemAt(i).widget()
             if isinstance(w, AlbumCard) and w.playlist_id == playlist_id:
-                w.set_tracks(tracks)
-                break
+                w.set_tracks(tracks); break
 
-    # ── artists row ────────────────────────────────────────────
+    # ── artists ──────────────────────────────────────────────────
 
-    def _extract_artists(self, songs: list) -> List[Dict]:
-        seen: set = set()
-        out: List[Dict] = []
+    def _extract_artists(self, songs):
+        seen = set(); out = []
         for s in songs:
-            name = (get_field(s, "artist", "")
-                    or get_field(s, "channelTitle", "") or "")
-            if name and name not in seen:
-                seen.add(name)
-                out.append({"name": name})
+            n = get_field(s,"artist","") or get_field(s,"channelTitle","") or ""
+            if n and n not in seen:
+                seen.add(n); out.append({"name": n})
         return out[:7]
 
-    def set_artists(self, artists: List[Dict]) -> None:
+    def set_artists(self, artists):
         while self._artists_lay.count() > 1:
             item = self._artists_lay.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
-
+            if item.widget(): item.widget().deleteLater()
         if not artists:
-            self._artists_hdr.setVisible(False)
-            self._artists_sa.setVisible(False)
-            return
-
-        self._artists_hdr.setVisible(True)
-        self._artists_sa.setVisible(True)
-
-        ring_colors = ["#4d59fb", "#6c3aef", "#f0b429", "#e8430a",
-                       "#4d59fb", "#6c3aef", "#f0b429"]
-
+            self._artists_hdr.setVisible(False); self._artists_sa.setVisible(False); return
+        self._artists_hdr.setVisible(True); self._artists_sa.setVisible(True)
+        ring_colors = ["#4d59fb","#6c3aef","#f0b429","#e8430a","#4d59fb","#6c3aef","#f0b429"]
         for i, a in enumerate(artists):
-            w = ArtistCircleWidget(
-                name       = a.get("name", ""),
-                diameter   = 76,
-                ring_color = ring_colors[i % len(ring_colors)],
-            )
-            w.clicked.connect(self.artist_clicked)
-            px = a.get("pixmap")
-            if px:
-                w.set_pixmap(px)
-            self._artists_lay.insertWidget(i, w)
+            try:
+                w = ArtistCircleWidget(name=a.get("name",""), diameter=76,
+                                       ring_color=ring_colors[i % len(ring_colors)])
+                # FIX: capture name in closure explicitly, emit through safe wrapper
+                _name = a.get("name", "")
+                sc = a.get("song_count")
+                if sc is not None:
+                    w.setToolTip(f"{_name}\n{sc} song(s) in your library")
+                def _click_handler(n=_name):
+                    try:
+                        if n: self.artist_clicked.emit(n)
+                    except Exception as exc:
+                        log.error("Artist emit error: %s", exc)
+                w.clicked.connect(_click_handler)
+                px = a.get("pixmap")
+                if px: w.set_pixmap(px)
+                self._artists_lay.insertWidget(i, w)
+            except Exception as exc:
+                log.warning("Artist widget creation error: %s", exc)

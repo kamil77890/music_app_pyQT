@@ -1,90 +1,98 @@
+"""
+YouTube API error handler + decorator with automatic key rotation on quotaExceeded.
+Handles both sync and async functions.
+"""
+from __future__ import annotations
+
+import asyncio
+import functools
+import logging
+
 from googleapiclient.errors import HttpError
+
+log = logging.getLogger(__name__)
+
 from app.exceptions.youtube_errors import (
     YouTubeQuotaExceededError,
     YouTubeAccessDeniedError,
     YouTubeNotFoundError,
     YouTubeBadRequestError,
     YouTubeServerError,
-    YouTubeAPIError
+    YouTubeAPIError,
 )
 from app.utils.api_key_manager import api_key_manager
 
 
 def handle_youtube_api_error(error: HttpError) -> None:
     """
-    Convert Google API HttpError to our custom YouTube errors
+    Inspect an HttpError and either:
+      • switch API keys + return (caller should retry), or
+      • raise a typed exception.
     """
     status_code = error.resp.status
-    error_content = error.content.decode(
-        'utf-8') if error.content else str(error)
+    body = error.content.decode("utf-8") if error.content else str(error)
 
     if status_code == 403:
-        if "quotaExceeded" in error_content:
-            # Check if we can switch to another key
-            if api_key_manager.has_more_keys():
-                # Switch key and indicate we should retry
-                api_key_manager.switch_to_next_key()
-                return  # Return instead of raising to allow retry
-            else:
-                raise YouTubeQuotaExceededError(error)
-        else:
-            raise YouTubeAccessDeniedError(error)
+        if "quotaExceeded" in body or "rateLimitExceeded" in body:
+            if api_key_manager.has_available_keys():
+                try:
+                    api_key_manager.switch_to_next_key()
+                    return  # signal: retry
+                except RuntimeError:
+                    pass
+            raise YouTubeQuotaExceededError(error)
+        raise YouTubeAccessDeniedError(error)
 
-    elif status_code == 404:
+    if status_code == 404:
         raise YouTubeNotFoundError("Requested resource", error)
-
-    elif status_code == 400:
+    if status_code == 400:
         raise YouTubeBadRequestError("Bad request parameters", error)
-
-    elif status_code >= 500:
+    if status_code >= 500:
         raise YouTubeServerError(error)
 
-    else:
-        raise YouTubeAPIError(
-            f"YouTube API error {status_code}: {error_content}", error)
+    raise YouTubeAPIError(f"YouTube API error {status_code}: {body}", error)
 
 
 def youtube_api_error_handler(func):
     """
-    Decorator to handle YouTube API errors automatically with retry logic
+    Decorator that catches HttpError, rotates keys on quota errors,
+    and retries.  Works for both sync and async functions.
     """
-    def wrapper(*args, **kwargs):
-        max_retries = len(api_key_manager.keys)
-        retry_count = 0
+    max_attempts = len(api_key_manager.keys)
 
-        while retry_count <= max_retries:
-            try:
-                return func(*args, **kwargs)
-            except HttpError as e:
-                retry_count += 1
+    if asyncio.iscoroutinefunction(func):
+        @functools.wraps(func)
+        async def async_wrapper(*args, **kwargs):
+            for attempt in range(1, max_attempts + 1):
                 try:
-                    # This will switch keys for quota errors and return (not raise)
-                    handle_youtube_api_error(e)
-                    # If we get here, it means we switched keys and should retry
-                    print(
-                        f"🔄 Retrying with new API key (attempt {retry_count}/{max_retries})")
-                    continue
-                except YouTubeAPIError as custom_error:
-                    # If we get a custom error, raise it
-                    if retry_count > max_retries:
-                        raise custom_error
-                    else:
-                        # For non-quota errors, we might still want to retry with same key
-                        print(
-                            f"❌ API error (attempt {retry_count}/{max_retries}): {custom_error}")
-                        if retry_count <= max_retries:
-                            continue
-                        raise
-
-            except Exception as e:
-                if retry_count > max_retries:
-                    raise YouTubeAPIError(
-                        f"Unexpected error after {max_retries} retries: {e}", e)
-                else:
-                    print(
-                        f"⚠️ Unexpected error (attempt {retry_count}/{max_retries}): {e}")
-                    continue
-
-        raise YouTubeAPIError(f"Max retries ({max_retries}) exceeded")
-
-    return wrapper
+                    return await func(*args, **kwargs)
+                except HttpError as e:
+                    try:
+                        handle_youtube_api_error(e)
+                        log.info("Retrying with new key (attempt %d/%d)", attempt, max_attempts)
+                        continue
+                    except YouTubeAPIError:
+                        if attempt >= max_attempts:
+                            raise
+                        log.warning("API error on attempt %d/%d", attempt, max_attempts)
+                        continue
+            raise YouTubeAPIError(f"Max retries ({max_attempts}) exceeded")
+        return async_wrapper
+    else:
+        @functools.wraps(func)
+        def sync_wrapper(*args, **kwargs):
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    return func(*args, **kwargs)
+                except HttpError as e:
+                    try:
+                        handle_youtube_api_error(e)
+                        log.info("Retrying with new key (attempt %d/%d)", attempt, max_attempts)
+                        continue
+                    except YouTubeAPIError:
+                        if attempt >= max_attempts:
+                            raise
+                        log.warning("API error on attempt %d/%d", attempt, max_attempts)
+                        continue
+            raise YouTubeAPIError(f"Max retries ({max_attempts}) exceeded")
+        return sync_wrapper

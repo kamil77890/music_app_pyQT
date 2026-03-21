@@ -1,3 +1,4 @@
+import logging
 import os
 import random
 from PyQt5.QtWidgets import (
@@ -7,6 +8,8 @@ from PyQt5.QtGui import QPixmap
 from PyQt5.QtCore import Qt, QTimer, QUrl, pyqtSignal
 from PyQt5.QtMultimedia import QMediaPlayer, QMediaContent
 from app.desktop.assets import assets
+
+log = logging.getLogger(__name__)
 
 
 class AudioPlayerWidget(QFrame):
@@ -278,7 +281,7 @@ class AudioPlayerWidget(QFrame):
     def toggle_shuffle(self):
         self.shuffle_mode = not self.shuffle_mode
         self.update_shuffle_button_style()
-        print(f"[DEBUG] Shuffle mode: {'ON' if self.shuffle_mode else 'OFF'}")
+        log.debug("Shuffle mode: %s", "ON" if self.shuffle_mode else "OFF")
     
     def update_shuffle_button_style(self):
         if self.shuffle_mode:
@@ -315,7 +318,7 @@ class AudioPlayerWidget(QFrame):
     def toggle_repeat(self):
         self.repeat_mode = (self.repeat_mode + 1) % 3
         self.update_repeat_button_style()
-        print(f"[DEBUG] Repeat mode: {self.repeat_mode}")
+        log.debug("Repeat mode: %d", self.repeat_mode)
     
     def update_repeat_button_style(self):
         if self.repeat_mode == 0: 
@@ -369,15 +372,23 @@ class AudioPlayerWidget(QFrame):
             """)
     
     def play_song(self, file_path, metadata=None):
-        """Play a song file"""
-        if not os.path.exists(file_path):
-            print(f"File not found: {file_path}")
+        """Play a local file or stream URL (http/https)."""
+        is_url = isinstance(file_path, str) and file_path.startswith(
+            ("http://", "https://"))
+        if not file_path:
             self.playback_state_changed.emit(False)
             return False
-            
+        if not is_url and not os.path.exists(file_path):
+            log.warning("File not found: %s", file_path)
+            self.playback_state_changed.emit(False)
+            return False
+
         try:
             self.current_song_path = file_path
-            self.player.setMedia(QMediaContent(QUrl.fromLocalFile(file_path)))
+            if is_url:
+                self.player.setMedia(QMediaContent(QUrl(file_path)))
+            else:
+                self.player.setMedia(QMediaContent(QUrl.fromLocalFile(file_path)))
             self.player.play()
             
             if metadata:
@@ -404,7 +415,7 @@ class AudioPlayerWidget(QFrame):
             return True
             
         except Exception as e:
-            print(f"Error playing song: {e}")
+            log.error("Error playing song: %s", e)
             self.playback_state_changed.emit(False)
             return False
     
@@ -442,7 +453,7 @@ class AudioPlayerWidget(QFrame):
     
     def on_media_status_changed(self, status):
         if status == QMediaPlayer.EndOfMedia:
-            print(f"[DEBUG] Song ended, repeat mode: {self.repeat_mode}, shuffle: {self.shuffle_mode}")
+            log.debug("Song ended, repeat mode: %d, shuffle: %s", self.repeat_mode, self.shuffle_mode)
             
             if self.repeat_mode == 2:  # Repeat one
                 self.player.setPosition(0)
@@ -454,7 +465,7 @@ class AudioPlayerWidget(QFrame):
                 if next_song:
                     file_path, metadata = next_song
                     self.play_song(file_path, metadata)
-                    print(f"[DEBUG] Playing random song: {os.path.basename(file_path)}")
+                    log.debug("Playing random song: %s", os.path.basename(file_path))
                 else:
                     self.playback_state_changed.emit(False)
             elif self.repeat_mode == 1:  # Repeat all
@@ -464,7 +475,7 @@ class AudioPlayerWidget(QFrame):
         elif status == QMediaPlayer.LoadedMedia:
             pass
         elif status == QMediaPlayer.InvalidMedia:
-            print("Invalid media")
+            log.error("Invalid media")
             self.playback_state_changed.emit(False)
     
     def stop_playback(self):

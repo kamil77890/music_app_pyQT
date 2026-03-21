@@ -340,6 +340,12 @@ class DownloadManagerDialog(QDialog):
         self._thread.progress.connect(self._on_progress)
         # song_complete(song_dict, success, file_path, error_msg)
         self._thread.song_complete.connect(self._on_song_complete)
+        try:
+            from app.desktop.utils.auto_playlist import auto_playlist_slot
+
+            self._thread.song_complete.connect(auto_playlist_slot)
+        except ImportError:
+            pass
         # finished(downloaded_paths)
         self._thread.finished.connect(self._on_all_done)
 

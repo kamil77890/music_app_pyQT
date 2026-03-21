@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional
 
 DEFAULT_CONFIG = {
     "download_path": str(Path.home() / "Music" / "YT Music"),
+    "api_base_url": "http://127.0.0.1:8001",
     "window_size": [1200, 800],
     "window_position": [100, 100],
     "volume": 70,

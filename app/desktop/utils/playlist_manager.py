@@ -4,16 +4,79 @@ Playlist manager for JSON-based playlist storage
 """
 
 import json
+import logging
 import os
 from typing import List, Dict, Any, Optional
 import shutil
 from PyQt5.QtWidgets import QMessageBox
 from app.desktop.utils.metadata import get_audio_metadata
 
+log = logging.getLogger(__name__)
+
+
+# Master playlist: every download is added here; shown first in the UI.
+DEFAULT_PLAYLIST_NAME = "All Songs"
+LEGACY_AUTO_PLAYLIST_FOLDER = "All playlist Automaticly"
+
 
 class PlaylistManager:
     """Manages playlist operations with JSON storage"""
-    
+
+    @staticmethod
+    def default_playlist_folder_path(base_path: str) -> str:
+        """Absolute path to the default «All Songs» playlist folder."""
+        return os.path.join(os.path.abspath(base_path), DEFAULT_PLAYLIST_NAME)
+
+    @staticmethod
+    def ensure_default_playlist(base_path: str) -> str:
+        """
+        Ensure the master «All Songs» playlist exists (valid playlist.json).
+        Renames legacy folder «All playlist Automaticly» → «All Songs» if needed.
+        Returns the folder path.
+        """
+        base_path = os.path.abspath(base_path or "")
+        if not base_path:
+            return ""
+
+        legacy = os.path.join(base_path, LEGACY_AUTO_PLAYLIST_FOLDER)
+        target = os.path.join(base_path, DEFAULT_PLAYLIST_NAME)
+
+        if os.path.isdir(legacy) and not os.path.isdir(target):
+            try:
+                os.rename(legacy, target)
+            except OSError as e:
+                log.warning("Could not rename legacy playlist folder: %s", e)
+
+        os.makedirs(target, exist_ok=True)
+        json_path = os.path.join(target, "playlist.json")
+        if not os.path.isfile(json_path):
+            PlaylistManager.create_playlist(target, DEFAULT_PLAYLIST_NAME)
+        return target
+
+    @staticmethod
+    def is_default_playlist_folder(folder_path: str, base_path: str) -> bool:
+        """True if this folder is the master «All Songs» playlist."""
+        try:
+            return os.path.normcase(os.path.abspath(folder_path)) == os.path.normcase(
+                PlaylistManager.default_playlist_folder_path(base_path)
+            )
+        except OSError:
+            return False
+
+    @staticmethod
+    def sort_playlists_default_first(playlists: List[Dict[str, Any]], base_path: str) -> List[Dict[str, Any]]:
+        """Put «All Songs» first; other playlists sorted by name."""
+        def key(pl: Dict[str, Any]) -> tuple:
+            fp = pl.get("folder_path") or ""
+            name = (pl.get("name") or pl.get("folder_name") or "").strip().lower()
+            is_def = (
+                name == DEFAULT_PLAYLIST_NAME.lower()
+                or PlaylistManager.is_default_playlist_folder(fp, base_path)
+            )
+            return (0 if is_def else 1, name)
+
+        return sorted(playlists, key=key)
+
     @staticmethod
     def create_playlist(folder_path: str, name: str) -> bool:
         """Create a new playlist with JSON metadata"""
@@ -39,7 +102,7 @@ class PlaylistManager:
             
             return True
         except Exception as e:
-            print(f"Error creating playlist: {e}")
+            log.error("Error creating playlist: %s", e)
             return False
     
     @staticmethod
@@ -78,7 +141,7 @@ class PlaylistManager:
             
             return data
         except Exception as e:
-            print(f"Error reading playlist JSON: {e}")
+            log.error("Error reading playlist JSON: %s", e)
             return {
                 "name": os.path.basename(folder_path),
                 "version": "1.0",
@@ -144,7 +207,7 @@ class PlaylistManager:
             
             return True
         except Exception as e:
-            print(f"Error adding song to playlist: {e}")
+            log.error("Error adding song to playlist: %s", e)
             return False
     
     @staticmethod
@@ -164,7 +227,7 @@ class PlaylistManager:
                 return True
             return False
         except Exception as e:
-            print(f"Error removing song from playlist: {e}")
+            log.error("Error removing song from playlist: %s", e)
             return False
     
     @staticmethod
@@ -190,7 +253,7 @@ class PlaylistManager:
                 return True
             return False
         except Exception as e:
-            print(f"Error updating song metadata: {e}")
+            log.error("Error updating song metadata: %s", e)
             return False
     
     @staticmethod
@@ -356,7 +419,7 @@ class PlaylistManager:
             
             return True
         except Exception as e:
-            print(f"Error exporting playlist: {e}")
+            log.error("Error exporting playlist: %s", e)
             return False
     
     @staticmethod
@@ -376,5 +439,5 @@ class PlaylistManager:
             
             return True
         except Exception as e:
-            print(f"Error importing playlist: {e}")
+            log.error("Error importing playlist: %s", e)
             return False

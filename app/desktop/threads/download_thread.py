@@ -2,9 +2,11 @@
 Thread for downloading songs — with pause / stop support
 """
 
+import logging
 import os
-import traceback
 from PyQt5.QtCore import QThread, pyqtSignal, QMutex, QMutexLocker
+
+log = logging.getLogger(__name__)
 
 from app.desktop.utils.helpers import song_to_dict, get_field, clean_filename, clean_video_id
 from app.desktop.utils.metadata import get_mp3_metadata
@@ -91,17 +93,17 @@ class DownloadThread(QThread):
                 artist = get_field(song_dict, "artist", "Unknown Artist")
 
                 if not video_id:
-                    print(f"No video ID: {title}")
+                    log.warning("No video ID: %s", title)
                     self.song_complete.emit(song_dict, False, "", "No video ID found")
                     continue
 
                 video_id = clean_video_id(video_id)
                 if not video_id:
-                    print(f"Invalid video ID: {title}")
+                    log.warning("Invalid video ID: %s", title)
                     self.song_complete.emit(song_dict, False, "", "Invalid video ID")
                     continue
 
-                print(f"Downloading {i+1}/{total}: {title} — {artist}")
+                log.info("Downloading %d/%d: %s - %s", i + 1, total, title, artist)
 
                 safe_title  = clean_filename(title)
                 safe_artist = clean_filename(artist)
@@ -119,21 +121,20 @@ class DownloadThread(QThread):
                             os.rename(path, target_path)
                             path = target_path
                         except Exception as e:
-                            print(f"Rename failed: {e}")
+                            log.error("Rename failed: %s", e)
 
                     downloaded.append(path)
                     self.progress.emit(100, title, i + 1, total)
                     self.song_complete.emit(song_dict, True, path, "")
                     self.download_manager.create_song_link(path, video_id, title, artist)
                 else:
-                    print(f"✗ Download failed: {title}")
+                    log.error("Download failed: %s", title)
                     self.progress.emit(100, title, i + 1, total)
                     self.song_complete.emit(song_dict, False, "", "Download failed")
 
             except Exception as e:
                 err = str(e)
-                print(f"✗ Error: {err}")
-                traceback.print_exc()
+                log.exception("Download error: %s", err)
                 self.progress.emit(100,
                     get_field(song_dict, "title", "Unknown"), i + 1, total)
                 self.song_complete.emit(song_dict, False, "", err)

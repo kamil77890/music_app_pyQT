@@ -231,3 +231,28 @@ def get_audio_metadata(file_path: str, include_cover_data: bool = False, save_co
 
 
 get_mp3_metadata = get_audio_metadata
+
+_AUDIO_EXTS = {".mp3", ".m4a", ".mp4", ".flac", ".wav", ".ogg"}
+
+
+def scan_for_metadata_issues(download_path: str) -> list:
+    """
+    Walk `download_path`, read metadata for every audio file,
+    return a list of ``{"file_path": ..., "metadata": ...}`` for files
+    where ``needs_fix`` is True.
+    """
+    if not download_path or not os.path.isdir(download_path):
+        return []
+    results = []
+    for root, _dirs, files in os.walk(download_path):
+        for f in files:
+            if os.path.splitext(f)[1].lower() not in _AUDIO_EXTS:
+                continue
+            fp = os.path.join(root, f)
+            try:
+                meta = get_audio_metadata(fp, include_cover_data=False)
+                if meta.get("needs_fix"):
+                    results.append({"file_path": fp, "metadata": meta})
+            except Exception:
+                pass
+    return results

@@ -35,6 +35,22 @@ async def get_detailed_data(songs: List[Dict[str, Any]]) -> List[Dict[str, Any]]
 
 
 @youtube_api_error_handler
+async def get_video_by_id(video_id: str) -> Optional[Dict[str, Any]]:
+    """Direct video lookup by YouTube video ID — no search quota burn."""
+    if not video_id or not video_id.strip():
+        return None
+    youtube = create_youtube_service()
+    resp = youtube.videos().list(
+        part="snippet,contentDetails,statistics",
+        id=video_id,
+    ).execute()
+    items = resp.get("items", [])
+    if not items:
+        return None
+    return items[0]
+
+
+@youtube_api_error_handler
 async def get_song_by_string(user_input: str, page_token: str = None) -> Dict[str, Any]:
     if not user_input.strip():
         return {"songs": [], "playlist": [], "nextPageToken": None}

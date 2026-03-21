@@ -26,8 +26,11 @@ progress(current: int, total: int, label: str)
 
 from __future__ import annotations
 
+import logging
 import re
 from typing import Any, Dict, List, Optional
+
+log = logging.getLogger(__name__)
 
 from PyQt5.QtCore import QThread, pyqtSignal, QMutex, QMutexLocker
 from PyQt5.QtGui import QPixmap
@@ -174,7 +177,6 @@ class SearchThread(QThread):
             self.error.emit(str(exc))
 
     async def _async_run(self) -> None:
-        from app.desktop.config import config
         import asyncio
 
         query = self.query.strip()

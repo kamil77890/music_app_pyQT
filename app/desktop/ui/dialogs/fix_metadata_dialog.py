@@ -10,7 +10,7 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QColor
-from app.desktop.utils.metadata import get_mp3_metadata
+from app.desktop.utils.metadata import get_audio_metadata
 from app.desktop.threads.fix_metadata_thread import FixMetadataThread
 
 

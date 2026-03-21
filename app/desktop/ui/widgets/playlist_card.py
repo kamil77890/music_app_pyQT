@@ -7,7 +7,7 @@ from PyQt5.QtWidgets import (
     QWidget, QGridLayout, QMenu, QAction
 )
 from PyQt5.QtGui import (
-    QPainter, QPen, QColor, QFont, QPixmap, QLinearGradient, QBrush
+    QPainter, QPen, QColor, QFont, QPixmap, QLinearGradient, QBrush, QPainterPath
 )
 from PyQt5.QtCore import Qt, QPropertyAnimation, QEasingCurve, pyqtProperty, pyqtSignal
 
@@ -17,10 +17,36 @@ from app.desktop.utils.metadata import get_audio_metadata
 
 class PlaylistCard(QFrame):
     """Spotify-style playlist card with cover grid"""
-    
+
     delete_requested = pyqtSignal(str)  # folder_path
-    play_requested = pyqtSignal(str)    # folder_path
-    
+    play_requested = pyqtSignal(str)  # folder_path
+
+    COVER_TILE = 66
+
+    @staticmethod
+    def _square_tile(pixmap: QPixmap, size: int) -> QPixmap:
+        """Center-crop to a rounded square (same pipeline as album / queue thumbs)."""
+        if pixmap.isNull():
+            return pixmap
+        scaled = pixmap.scaled(
+            size,
+            size,
+            Qt.KeepAspectRatioByExpanding,
+            Qt.SmoothTransformation,
+        )
+        out = QPixmap(size, size)
+        out.fill(Qt.transparent)
+        p = QPainter(out)
+        p.setRenderHint(QPainter.Antialiasing)
+        path = QPainterPath()
+        path.addRoundedRect(0, 0, size, size, 6, 6)
+        p.setClipPath(path)
+        x = (scaled.width() - size) // 2
+        y = (scaled.height() - size) // 2
+        p.drawPixmap(-x, -y, scaled)
+        p.end()
+        return out
+
     def __init__(self, folder_path, parent=None):
         super().__init__(parent)
         
@@ -49,7 +75,7 @@ class PlaylistCard(QFrame):
         
         self.setContextMenuPolicy(Qt.CustomContextMenu)
         self.customContextMenuRequested.connect(self.show_context_menu)
-    
+
     def setup_ui(self):
         """Setup UI for Spotify-style playlist card"""
         self.setObjectName("playlist_card")
@@ -77,7 +103,7 @@ class PlaylistCard(QFrame):
             row = i // 2
             col = i % 2
             cover_label = QLabel()
-            cover_label.setFixedSize(66, 66)
+            cover_label.setFixedSize(self.COVER_TILE, self.COVER_TILE)
             cover_label.setStyleSheet("border-radius: 4px;")
             self.cover_layout.addWidget(cover_label, row, col)
             self.cover_labels.append(cover_label)
@@ -265,10 +291,8 @@ class PlaylistCard(QFrame):
                     # Create pixmap
                     pixmap = QPixmap.fromImage(image)
                     
-                    # Scale to fit
-                    scaled = pixmap.scaled(66, 66, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
-                    
-                    self.cover_labels[index].setPixmap(scaled)
+                    tile = self._square_tile(pixmap, self.COVER_TILE)
+                    self.cover_labels[index].setPixmap(tile)
                     return
             except Exception as e:
                 print(f"[DEBUG] Error loading cover from metadata: {e}")
@@ -297,10 +321,8 @@ class PlaylistCard(QFrame):
                 # Create pixmap
                 pixmap = QPixmap.fromImage(image)
                 
-                # Scale to fit
-                scaled = pixmap.scaled(66, 66, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
-                
-                self.cover_labels[index].setPixmap(scaled)
+                tile = self._square_tile(pixmap, self.COVER_TILE)
+                self.cover_labels[index].setPixmap(tile)
                 return
         except Exception as e:
             print(f"[DEBUG] Error loading cover from file: {e}")
