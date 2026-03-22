@@ -86,6 +86,40 @@ def clean_filename(filename: str) -> str:
     
     return filename.strip()
 
+def duration_to_seconds(val: Any) -> float:
+    """
+    Coerce duration from metadata to seconds.
+    Handles int/float seconds, numeric strings, and 'M:SS' / 'H:M:SS' strings.
+    """
+    if val is None:
+        return 0.0
+    if isinstance(val, (int, float)):
+        return float(val)
+    if isinstance(val, str):
+        s = val.strip()
+        if not s:
+            return 0.0
+        if ":" in s:
+            parts = s.split(":")
+            try:
+                nums = [float(p) for p in parts if p != ""]
+                if len(nums) == 3:
+                    return nums[0] * 3600 + nums[1] * 60 + nums[2]
+                if len(nums) == 2:
+                    return nums[0] * 60 + nums[1]
+            except ValueError:
+                pass
+        try:
+            return float(s)
+        except ValueError:
+            return 0.0
+    return 0.0
+
+
+def duration_to_ms(val: Any) -> int:
+    return int(duration_to_seconds(val) * 1000)
+
+
 def clean_video_id(video_id: str) -> Optional[str]:
     """Extract clean video ID from various formats"""
     if not video_id:

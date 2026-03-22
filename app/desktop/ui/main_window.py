@@ -11,13 +11,14 @@ main_window.py — DesktopApp
 
 from __future__ import annotations
 
+import base64
 import logging
 import os
 from typing import Dict, Optional
 
 log = logging.getLogger(__name__)
 
-from PyQt5.QtCore import Qt, QTimer, pyqtSlot, pyqtSignal
+from PyQt5.QtCore import Qt, QTimer, pyqtSlot, pyqtSignal, QEvent
 from PyQt5.QtGui import QPainter, QColor, QIcon, QFont, QPixmap, QKeySequence
 from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
@@ -29,19 +30,50 @@ from PyQt5.QtWidgets import (
 from app.desktop.ui.new_styles                      import get_stylesheet
 from app.desktop.ui.widgets.main_dashboard          import MainDashboard
 from app.desktop.ui.widgets.playback_controller     import PlaybackController
+from app.desktop.ui.widgets.bottom_player_bar      import BottomNowPlayingBar
 from app.desktop.ui.pages.playlists_page            import PlaylistsPage
 from app.desktop.threads.search_thread              import SearchThread, AlbumTracksThread
 from app.desktop.ui.dialogs.download_manager_dialog import DownloadManagerDialog
 from app.desktop.ui.dialogs.fix_metadata_dialog     import FixMetadataDialog
 from app.desktop.config                             import config
 from app.desktop.ui.widgets.audio_player            import AudioPlayerWidget
-from app.desktop.utils.helpers                      import song_to_dict
+from app.desktop.utils.helpers                      import song_to_dict, duration_to_ms
+from app.desktop.utils.metadata                   import load_cover_pixmap_from_file
 from app.desktop.utils.playlist_manager            import PlaylistManager
 
 from PyQt5.QtWidgets import QMessageBox, QApplication
 
 PAGE_DISCOVER  = 0
 PAGE_PLAYLISTS = 1
+
+_SIDEBAR_W = 252
+_RIGHT_PANEL_MAX_W = 310
+_MIN_CENTER_W = 180
+
+
+def _cover_pixmap_for_track(
+    file_path: str, is_url: bool, metadata: dict,
+) -> Optional[QPixmap]:
+    """Embedded art from file, else optional base64 from metadata dict."""
+    cover_px: Optional[QPixmap] = None
+    if not is_url and file_path and os.path.isfile(file_path):
+        cover_px = load_cover_pixmap_from_file(file_path)
+    if cover_px is None and metadata.get("cover_base64"):
+        try:
+            raw = base64.b64decode(metadata["cover_base64"])
+            pm = QPixmap()
+            if pm.loadFromData(raw) and not pm.isNull():
+                cover_px = pm
+        except Exception:
+            pass
+    return cover_px
+
+
+def _norm_path_key(path: str) -> str:
+    try:
+        return os.path.normcase(os.path.normpath(path))
+    except OSError:
+        return path or ""
 
 
 def _make_tray_icon() -> QIcon:
@@ -54,7 +86,7 @@ def _make_tray_icon() -> QIcon:
     p.drawEllipse(0, 0, 32, 32)
     p.setPen(QColor("#ffffff"))
     p.setFont(QFont("Segoe UI", 14, QFont.Bold))
-    p.drawText(0, 0, 32, 32, Qt.AlignCenter, "n")
+    p.drawText(0, 0, 32, 32, Qt.AlignCenter, "M")
     p.end()
     return QIcon(px)
 
@@ -110,6 +142,7 @@ def _sidebar_divider() -> QFrame:
 class _Sidebar(QFrame):
     copy_cloud_url_clicked = pyqtSignal()
     fix_metadata_clicked   = pyqtSignal()
+    library_item_clicked   = pyqtSignal(str)  # folder_path
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -130,7 +163,7 @@ class _Sidebar(QFrame):
         ll = QHBoxLayout(logo_frame)
         ll.setContentsMargins(20, 6, 16, 6)
         logo = QLabel(
-            "<span style='color:#4d59fb;font-size:24px;font-weight:900;letter-spacing:-0.5px;'>ñ</span>"
+            "<span style='color:#4d59fb;font-size:24px;font-weight:900;letter-spacing:-0.5px;'>M</span>"
             "<span style='color:#e8eaf0;font-size:24px;font-weight:900;letter-spacing:-0.5px;'>usic</span>"
         )
         logo.setTextFormat(Qt.RichText)
@@ -193,7 +226,7 @@ class _Sidebar(QFrame):
 
         root.addWidget(_sidebar_divider())
 
-        # ── Bottom actions ────────────────────────────────────
+        # ── Bottom actions (always above app-wide mini player) ─
         bottom = QWidget()
         bottom.setStyleSheet("background:transparent;")
         blay = QVBoxLayout(bottom)
@@ -226,13 +259,17 @@ class _Sidebar(QFrame):
     def set_active(self, key: str):
         self._on_nav(key)
 
-    def populate_library(self, names: list):
+    def populate_library(self, folders: list):
+        """
+        folders — list of (display_name, folder_path) tuples.
+        Clicking a row emits library_item_clicked(folder_path).
+        """
         while self._library_lay.count():
             item = self._library_lay.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
 
-        n = len(names)
+        n = len(folders)
         if n == 0:
             self._library_count_lbl.setText("")
             hint = QLabel(
@@ -245,7 +282,7 @@ class _Sidebar(QFrame):
             return
 
         self._library_count_lbl.setText(f"{n}")
-        for i, name in enumerate(names[:20]):
+        for name, folder_path in folders[:20]:
             row = QFrame()
             row.setObjectName("sidebar_lib_row")
             row.setCursor(Qt.PointingHandCursor)
@@ -262,6 +299,12 @@ class _Sidebar(QFrame):
             lbl.setWordWrap(False)
             lbl.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
             rl.addWidget(lbl, 1)
+            # clicking the row opens that playlist
+            row.mousePressEvent = (
+                lambda ev, fp=folder_path:
+                self.library_item_clicked.emit(fp)
+                if ev.button() == Qt.LeftButton else None
+            )
             self._library_lay.addWidget(row)
 
         self._library_lay.addStretch()
@@ -274,7 +317,9 @@ class DesktopApp(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("ñusic — Smart Music Player")
+        self.setWindowTitle("Music")
+        # Bez paska tytułu (bez „Music”, zamykania, minimalizacji)
+        self.setWindowFlags(Qt.Window | Qt.FramelessWindowHint)
 
         self._search_thread:      Optional[SearchThread]     = None
         self._album_thread:       Optional[AlbumTracksThread] = None
@@ -285,14 +330,21 @@ class DesktopApp(QMainWindow):
         self._artist_only_search  = False
 
         w, h = config.get("window_size", [1440, 900])
-        self.resize(w, h)
-        self.setMinimumSize(1100, 720)
+        self.setFixedSize(int(w), int(h))
 
         self._audio = AudioPlayerWidget()
         self._audio.playback_state_changed.connect(self._on_playback_state)
+        self._audio.track_changed.connect(self._update_now_playing_ui)
         self._audio.player.positionChanged.connect(self._on_position_changed)
+        self._audio.player.durationChanged.connect(self._on_player_duration_changed)
+        self._hide_bottom_bar_timer = QTimer(self)
+        self._hide_bottom_bar_timer.setSingleShot(True)
+        self._hide_bottom_bar_timer.setInterval(280)
+        self._hide_bottom_bar_timer.timeout.connect(self._hide_bottom_bar_if_still_stopped)
 
-        self.setStyleSheet(get_stylesheet())
+        self.setStyleSheet(
+            get_stylesheet()
+            + "\nQMainWindow { background-color: #000000; }\n")
         self._build_ui()
         self._setup_tray()
 
@@ -313,6 +365,8 @@ class DesktopApp(QMainWindow):
         self._quota_timer.start()
 
         self._setup_shortcuts()
+        self._global_hotkeys_stop = None
+        self._setup_global_hotkeys()
 
     def _center_window(self):
         screen = QApplication.primaryScreen().geometry()
@@ -330,17 +384,52 @@ class DesktopApp(QMainWindow):
         from PyQt5.QtWidgets import QShortcut
         from PyQt5.QtGui import QKeySequence
 
-        QShortcut(QKeySequence("Space"), self, self._audio.toggle_play)
-        QShortcut(QKeySequence("Ctrl+Right"), self, self._audio.next_song)
-        QShortcut(QKeySequence("Ctrl+Left"), self, self._audio.previous_song)
-        QShortcut(QKeySequence("Ctrl+F"), self, self._focus_search)
-        QShortcut(QKeySequence("Ctrl+1"), self, lambda: self._switch_page("discover"))
-        QShortcut(QKeySequence("Ctrl+2"), self, lambda: self._switch_page("playlists"))
+        ctx = Qt.ApplicationShortcut
+
+        def _sc(seq, slot):
+            s = QShortcut(QKeySequence(seq), self)
+            s.setContext(ctx)
+            s.activated.connect(slot)
+
+        _sc("Space", self._audio.toggle_play)
+        _sc("Ctrl+Right", self._audio.next_song)
+        _sc("Ctrl+Left", self._audio.previous_song)
+        _sc("Ctrl+F", self._focus_search)
+        _sc("Ctrl+1", lambda: self._switch_page("discover"))
+        _sc("Ctrl+2", lambda: self._switch_page("playlists"))
+        # * w oknie: play/pause (jak globalnie); wyciszenie: Ctrl+M
+        _sc("Shift+8", self._audio.toggle_play)
+        _sc(Qt.Key_Asterisk, self._audio.toggle_play)
+        _sc("Ctrl+M", self._on_bottom_mute_toggle)
+        # Skróty „. / ← / →” (mute / prev / next) tylko w global_hotkeys (pynput).
+
+    def _setup_global_hotkeys(self) -> None:
+        try:
+            from app.desktop.utils.global_hotkeys import start_global_hotkeys
+        except ImportError:
+            return
+        self._global_hotkeys_stop = start_global_hotkeys(
+            on_play_pause=self._audio.toggle_play,
+            on_next=self._audio.next_song,
+            on_previous=self._audio.previous_song,
+            on_mute=self._on_bottom_mute_toggle,
+        )
+
+    def changeEvent(self, event):
+        # Minimalizacja → ukryj okno, aplikacja zostaje w zasobniku
+        if event.type() == QEvent.WindowStateChange:
+            if self.windowState() & Qt.WindowMinimized:
+                QTimer.singleShot(0, self.hide)
+        super().changeEvent(event)
 
     def _focus_search(self):
         self._switch_page("discover")
         self._discover_page._search_input.setFocus()
         self._discover_page._search_input.selectAll()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._apply_splitter_layout()
 
     # ── UI build ───────────────────────────────────────────────
 
@@ -365,11 +454,13 @@ class DesktopApp(QMainWindow):
         self._sidebar.copy_cloud_url_clicked.connect(self._on_copy_cloud_music_url)
         self._sidebar.fix_metadata_clicked.connect(
             lambda: self._open_metadata_fixer(auto=False))
+        self._sidebar.library_item_clicked.connect(self._on_sidebar_playlist_clicked)
+
         self._splitter.addWidget(self._sidebar)
 
         # Centre stack
         self._stack = QStackedWidget()
-        self._stack.setStyleSheet("background:#0b0b0b;")
+        self._stack.setStyleSheet("background:#000000;")
 
         # PAGE_DISCOVER = 0
         self._discover_page = MainDashboard()
@@ -386,35 +477,30 @@ class DesktopApp(QMainWindow):
         # PAGE_PLAYLISTS = 1
         self._playlists_page = PlaylistsPage()
         self._playlists_page.playlist_play_requested.connect(self._play_playlist)
+        self._playlists_page.playlist_random_requested.connect(
+            self._play_random_from_playlist)
         self._playlists_page.song_play_requested.connect(self._play_song)
         self._stack.addWidget(self._playlists_page)
 
         self._splitter.addWidget(self._stack)
 
-        # Right panel — hidden until first play
+        # Right column — album / playlist tracks only
         self._player = PlaybackController()
-        self._player.play_pause_clicked.connect(self._audio.toggle_play)
-        self._player.prev_clicked.connect(self._audio.previous_song)
-        self._player.next_clicked.connect(self._audio.next_song)
-        self._player.seek_requested.connect(
-            lambda ms: self._audio.player.setPosition(ms))
-        self._player.volume_changed.connect(self._audio.set_volume)
-        self._player.shuffle_toggled.connect(self._on_shuffle)
-        self._player.repeat_toggled.connect(self._on_repeat)
-        self._player.queue_item_double_clicked.connect(self._play_song)
-        if hasattr(self._player, "browse_track_play_requested"):
-            self._player.browse_track_play_requested.connect(self._play_song)
-        if hasattr(self._player, "browse_track_download_requested"):
-            self._player.browse_track_download_requested.connect(self._download_single)
-        if hasattr(self._player, "download_all_album_requested"):
-            self._player.download_all_album_requested.connect(
-                self._download_album_as_playlist)
+        self._player.browse_track_play_requested.connect(self._play_song)
+        self._player.browse_track_download_requested.connect(self._download_single)
+        self._player.download_all_album_requested.connect(
+            self._download_album_as_playlist)
+        self._player.album_panel_closed.connect(self._on_album_panel_closed)
         self._splitter.addWidget(self._player)
 
-        self._splitter.setSizes([252, self.width() - 252, 0])
+        self._splitter.setStretchFactor(0, 0)
+        self._splitter.setStretchFactor(1, 1)
+        self._splitter.setStretchFactor(2, 0)
+
         self._splitter.setCollapsible(0, False)
         self._splitter.setCollapsible(2, True)
         self._player.setVisible(False)
+        QTimer.singleShot(0, self._apply_splitter_layout)
 
         root.addWidget(self._splitter, 1)
 
@@ -436,15 +522,111 @@ class DesktopApp(QMainWindow):
         qb_lay.addWidget(qb_dismiss)
         root.addWidget(self._quota_banner)
 
+        # App-wide bottom mini player (full width, above hidden engine widget)
+        self._bottom_player = BottomNowPlayingBar()
+        self._bottom_player.play_pause_clicked.connect(self._audio.toggle_play)
+        self._bottom_player.prev_clicked.connect(self._audio.previous_song)
+        self._bottom_player.next_clicked.connect(self._audio.next_song)
+        self._bottom_player.seek_requested.connect(
+            lambda ms: self._audio.player.setPosition(ms))
+        self._bottom_player.shuffle_clicked.connect(self._on_bottom_shuffle)
+        self._bottom_player.repeat_clicked.connect(self._on_bottom_repeat)
+        self._bottom_player.volume_changed.connect(self._on_bottom_volume_changed)
+        self._bottom_player.mute_toggle_requested.connect(
+            self._on_bottom_mute_toggle)
+        root.addWidget(self._bottom_player)
+
         self._audio.setVisible(False)
         root.addWidget(self._audio)
 
-    def _show_right_panel(self):
-        if not self._right_panel_visible:
-            self._right_panel_visible = True
-            self._player.setVisible(True)
-            total = self.width()
-            self._splitter.setSizes([252, total - 252 - 310, 310])
+        self.statusBar().hide()
+        self.statusBar().setSizeGripEnabled(False)
+        self._sync_bottom_volume_ui()
+        self._refresh_transport_styles()
+        self._bottom_player.setVisible(False)
+        self._audio.player.stateChanged.connect(self._on_player_state_changed)
+
+    def _on_player_state_changed(self, state) -> None:
+        from PyQt5.QtMultimedia import QMediaPlayer
+        if state in (QMediaPlayer.PlayingState, QMediaPlayer.PausedState):
+            self._hide_bottom_bar_timer.stop()
+            self._bottom_player.setVisible(True)
+        elif state == QMediaPlayer.StoppedState:
+            self._hide_bottom_bar_timer.start()
+
+    def _hide_bottom_bar_if_still_stopped(self) -> None:
+        from PyQt5.QtMultimedia import QMediaPlayer
+        if self._audio.player.state() == QMediaPlayer.StoppedState:
+            self._bottom_player.setVisible(False)
+
+    def _on_player_duration_changed(self, duration_ms: int) -> None:
+        if duration_ms and duration_ms > 0:
+            self._bottom_player.set_duration_ms(duration_ms)
+
+    def _apply_splitter_layout(self):
+        """Keep sidebar + center + optional album panel; avoid negative/zero center width."""
+        if not getattr(self, "_splitter", None):
+            return
+        w = max(self.width(), 400)
+        inner = max(0, w - _SIDEBAR_W)
+        if getattr(self, "_right_panel_visible", False):
+            w_right = min(_RIGHT_PANEL_MAX_W, max(0, inner - _MIN_CENTER_W))
+            w_center = max(_MIN_CENTER_W, inner - w_right)
+            self._splitter.setSizes([_SIDEBAR_W, w_center, w_right])
+        else:
+            self._splitter.setSizes(
+                [_SIDEBAR_W, max(_MIN_CENTER_W, inner), 0])
+
+    def _show_right_panel(self) -> None:
+        """Show album / playlist track list in the right column."""
+        self._right_panel_visible = True
+        self._player.setVisible(True)
+        self._player.raise_()
+        self._apply_splitter_layout()
+
+    def _on_album_panel_closed(self):
+        """User closed the album panel — collapse right column."""
+        self._right_panel_visible = False
+        self._player.setVisible(False)
+        self._apply_splitter_layout()
+
+    def _on_bottom_shuffle(self) -> None:
+        self._audio.toggle_shuffle()
+        self._refresh_transport_styles()
+
+    def _on_bottom_repeat(self) -> None:
+        self._audio.toggle_repeat()
+        self._refresh_transport_styles()
+
+    def _sync_bottom_volume_ui(self) -> None:
+        a = self._audio
+        self._bottom_player.set_volume_ui(
+            a.player.volume(),
+            a.is_muted,
+            nominal_when_muted=a.previous_volume if a.is_muted else None,
+        )
+
+    def _on_bottom_volume_changed(self, value: int) -> None:
+        self._audio.set_volume(value)
+        self._sync_bottom_volume_ui()
+
+    def _on_bottom_mute_toggle(self) -> None:
+        self._audio.toggle_mute()
+        self._sync_bottom_volume_ui()
+
+    def _notify_status(self, msg: str, duration_ms: int = 8000) -> None:
+        log.info("Status: %s", msg)
+        tray = getattr(self, "_tray", None)
+        if tray is not None:
+            try:
+                dm = duration_ms if duration_ms and duration_ms > 0 else 60000
+                tray.showMessage("Music", msg, QSystemTrayIcon.Information, dm)
+            except Exception:
+                pass
+
+    def _refresh_transport_styles(self) -> None:
+        self._bottom_player.set_shuffle_style(self._audio.shuffle_mode)
+        self._bottom_player.set_repeat_style(self._audio.repeat_mode)
 
     # ── page switching ─────────────────────────────────────────
 
@@ -460,8 +642,19 @@ class DesktopApp(QMainWindow):
     # ── recommendations ────────────────────────────────────────
 
     def _run_initial_recommendations(self):
-        if not self._initial_rec_done:
-            self._run_recommender(randomise=False)
+        if self._initial_rec_done:
+            return
+        try:
+            from app.desktop.utils.recommendation_cache import try_load_cached_queries
+        except ImportError:
+            try_load_cached_queries = None  # type: ignore
+        download_path = config.get_download_path()
+        if try_load_cached_queries and os.path.isdir(download_path):
+            cached = try_load_cached_queries(download_path)
+            if cached:
+                self._apply_recommendation_queries(cached, save_cache=False)
+                return
+        self._run_recommender(randomise=False)
 
     @pyqtSlot()
     def _on_refresh_recommendations(self):
@@ -479,7 +672,8 @@ class DesktopApp(QMainWindow):
 
         if self._recommender_thread and self._recommender_thread.isRunning():
             self._recommender_thread.stop()
-            self._recommender_thread.wait(500)
+            # Krótki wait() zostawiał wątek w tle → GC niszczył QThread → "Destroyed while still running"
+            self._recommender_thread.wait(120_000)
 
         self._discover_page.show_loading("Building recommendations from your library…")
 
@@ -489,18 +683,34 @@ class DesktopApp(QMainWindow):
             randomise=randomise,
         )
         self._recommender_thread.recommendations_ready.connect(
-            self._on_recommendations_ready)
+            self._on_recommendations_ready_from_thread)
         self._recommender_thread.error.connect(
             lambda e: log.error("Recommender error: %s", e))
         self._recommender_thread.start()
 
-    @pyqtSlot(list)
-    def _on_recommendations_ready(self, queries: list):
+    @pyqtSlot(list, int)
+    def _on_recommendations_ready_from_thread(self, queries: list, library_song_count: int):
+        self._apply_recommendation_queries(queries, save_cache=True, library_song_count=library_song_count)
+
+    def _apply_recommendation_queries(
+        self,
+        queries: list,
+        *,
+        save_cache: bool,
+        library_song_count: int = 0,
+    ) -> None:
         self._initial_rec_done = True
         if not queries:
             self._discover_page.show_loading(
                 "Download some music first — your recommendations will appear here.")
             return
+        if save_cache:
+            try:
+                from app.desktop.utils.recommendation_cache import save_cached_queries
+                save_cached_queries(
+                    config.get_download_path(), queries, library_song_count)
+            except Exception as exc:
+                log.debug("Recommendation cache save: %s", exc)
         self._on_search(queries[0])
 
     # ── search ─────────────────────────────────────────────────
@@ -542,7 +752,8 @@ class DesktopApp(QMainWindow):
 
     @pyqtSlot(str)
     def _on_album_clicked(self, playlist_id: str):
-        if not playlist_id:
+        if not playlist_id or not str(playlist_id).strip():
+            log.warning("Album click ignored: empty playlist_id")
             return
 
         if self._album_thread is not None:
@@ -639,6 +850,35 @@ class DesktopApp(QMainWindow):
 
     # ── playback ───────────────────────────────────────────────
 
+    def _update_now_playing_ui(self, file_path: str, metadata: dict) -> None:
+        """Synchronizuje dolny pasek z faktycznie odtwarzanym utworem (next/prev/kolejka)."""
+        if not file_path:
+            return
+        is_url = isinstance(file_path, str) and file_path.startswith(
+            ("http://", "https://"))
+        meta = dict(metadata) if metadata else {}
+        for fp, m in self._audio.playlist:
+            if fp == file_path:
+                merged = dict(m)
+                merged.update(meta)
+                meta = merged
+                break
+        title = meta.get("title", os.path.basename(file_path))
+        artist = meta.get("artist", "Unknown Artist")
+        dur_ms = duration_to_ms(meta.get("duration", 0))
+        cover = (
+            meta.get("high_res_thumbnail")
+            or meta.get("thumbnail")
+            or meta.get("cover")
+            or ""
+        )
+        cover_px = _cover_pixmap_for_track(file_path, is_url, meta)
+        self._hide_bottom_bar_timer.stop()
+        self._bottom_player.setVisible(True)
+        self._bottom_player.set_track(
+            title, artist, dur_ms, cover_url=cover, pixmap=cover_px)
+        self._bottom_player.set_playing(True)
+
     def _play_song(self, file_path: str, metadata: dict):
         is_url = isinstance(file_path, str) and file_path.startswith(
             ("http://", "https://"))
@@ -646,23 +886,26 @@ class DesktopApp(QMainWindow):
             return
         if not is_url and not os.path.exists(file_path):
             return
+        # YouTube pages are HTML — Qt cannot stream them; avoid GStreamer errors
+        if is_url and (
+            "youtube.com/watch" in file_path
+            or "youtu.be/" in file_path
+        ):
+            log.info(
+                "Skipping YouTube URL playback (download to library first): %s",
+                file_path[:80],
+            )
+            return
         try:
-            self._show_right_panel()
-
             already = any(fp == file_path for fp, _ in self._audio.playlist)
             if not already:
                 self._audio.add_to_playlist(file_path, metadata)
             self._audio.play_song(file_path, metadata)
-
-            title  = metadata.get("title",  os.path.basename(file_path))
-            artist = metadata.get("artist", "Unknown Artist")
-            dur_s  = metadata.get("duration", 0) or 0
-
-            self._player.set_track(title, artist, int(dur_s * 1000))
-            self._player.set_playing(True)
-            self._player.add_to_queue(file_path, metadata)
-            if hasattr(self._player, "show_now_playing_mode"):
-                self._player.show_now_playing_mode()
+            self._audio.current_playlist = list(self._audio.playlist)
+            # UI „now playing” aktualizuje sygnał track_changed → _update_now_playing_ui
+            folder = metadata.get("from_playlist_folder")
+            if folder and os.path.isdir(folder):
+                self._fill_queue_random_from_playlist(folder, file_path)
         except Exception as exc:
             log.error("_play_song: %s", exc)
 
@@ -677,43 +920,106 @@ class DesktopApp(QMainWindow):
             files = get_mp3_files_recursive(folder_path)
             if not files:
                 return
-            self._audio.clear_playlist()
-            self._player.clear_queue()
+            pairs = []
             for fp in files:
                 try:
                     meta = get_audio_metadata(fp)
-                    self._audio.add_to_playlist(fp, meta)
-                    self._player.add_to_queue(fp, dict(meta))
+                    m = dict(meta)
+                    m["from_playlist_folder"] = folder_path
+                    pairs.append((fp, m))
                 except Exception:
                     pass
-            if self._audio.playlist:
-                fp, meta = self._audio.playlist[0]
-                self._audio.play_song(fp, meta)
+            if not pairs:
+                return
+            self._audio.replace_playlist(pairs)
+            fp, meta = pairs[0]
+            self._audio.play_song(fp, meta)
+            self._hide_bottom_bar_timer.stop()
+            self._bottom_player.setVisible(True)
+            if self._player.is_browse_open() and not self._right_panel_visible:
                 self._show_right_panel()
-                self._player.set_track(
-                    meta.get("title",  os.path.basename(fp)),
-                    meta.get("artist", "Unknown Artist"),
-                    int((meta.get("duration", 0) or 0) * 1000),
-                )
-                self._player.set_playing(True)
-                if hasattr(self._player, "show_now_playing_mode"):
-                    self._player.show_now_playing_mode()
+            # track_changed → _update_now_playing_ui
         except Exception as exc:
             log.error("_play_playlist: %s", exc)
 
+    def _play_random_from_playlist(self, folder_path: str):
+        """Pick one random track from the playlist folder and play it."""
+        import random
+        try:
+            from app.desktop.utils.helpers import get_mp3_files_recursive
+            from app.desktop.utils.metadata import get_audio_metadata
+        except ImportError:
+            return
+        try:
+            files = [f for f in get_mp3_files_recursive(folder_path) if os.path.isfile(f)]
+            if not files:
+                QMessageBox.information(
+                    self, "Playlist", "No audio files found in this playlist.")
+                return
+            pairs = []
+            for fp in files:
+                try:
+                    meta = get_audio_metadata(fp)
+                    m = dict(meta)
+                    m["from_playlist_folder"] = folder_path
+                    pairs.append((fp, m))
+                except Exception:
+                    pass
+            if not pairs:
+                return
+            self._audio.replace_playlist(pairs)
+            i = random.randrange(len(pairs))
+            fp, meta = pairs[i]
+            self._audio.current_index = i
+            self._audio.play_song(fp, meta)
+            self._hide_bottom_bar_timer.stop()
+            self._bottom_player.setVisible(True)
+            # track_changed → _update_now_playing_ui
+        except Exception as exc:
+            log.error("_play_random_from_playlist: %s", exc)
+
+    def _fill_queue_random_from_playlist(self, folder_path: str, current_fp: str):
+        """Append shuffled other tracks from the same playlist (no duplicates)."""
+        import random
+        try:
+            from app.desktop.utils.metadata import get_audio_metadata
+        except ImportError:
+            return
+        try:
+            data = PlaylistManager.get_playlist_info(folder_path)
+        except Exception:
+            return
+        cur_k = _norm_path_key(current_fp)
+        existing = {_norm_path_key(fp) for fp, _ in self._audio.playlist}
+        candidates = []
+        for s in data.get("songs", []):
+            fp = s.get("file_path", "")
+            if not fp or not os.path.isfile(fp):
+                continue
+            nk = _norm_path_key(fp)
+            if nk == cur_k or nk in existing:
+                continue
+            try:
+                m = get_audio_metadata(fp)
+                candidates.append((fp, dict(m)))
+            except Exception:
+                pass
+        random.shuffle(candidates)
+        for fp, meta in candidates:
+            nk = _norm_path_key(fp)
+            if nk in existing:
+                continue
+            if any(nk == _norm_path_key(x[0]) for x in self._audio.playlist):
+                continue
+            self._audio.add_to_playlist(fp, meta)
+            existing.add(nk)
+        self._audio.current_playlist = list(self._audio.playlist)
+
     def _on_playback_state(self, playing: bool):
-        self._player.set_playing(playing)
+        self._bottom_player.set_playing(playing)
 
     def _on_position_changed(self, position_ms: int):
-        self._player.update_position(position_ms)
-
-    def _on_shuffle(self, enabled: bool):
-        self._audio.shuffle_mode = enabled
-        self._audio.update_shuffle_button_style()
-
-    def _on_repeat(self, enabled: bool):
-        self._audio.repeat_mode = 1 if enabled else 0
-        self._audio.update_repeat_button_style()
+        self._bottom_player.update_position(position_ms)
 
     @pyqtSlot(str)
     def _on_artist_clicked(self, artist_name: str):
@@ -762,13 +1068,20 @@ class DesktopApp(QMainWindow):
             if not os.path.isdir(path):
                 return
             folders = sorted(
-                d for d in os.listdir(path)
+                (d, os.path.join(path, d))
+                for d in os.listdir(path)
                 if os.path.isdir(os.path.join(path, d))
                 and not d.startswith(".")
             )
             self._sidebar.populate_library(folders)
         except Exception as exc:
             log.error("Sidebar load error: %s", exc)
+
+    def _on_sidebar_playlist_clicked(self, folder_path: str):
+        """Open the Playlists tab and immediately show the selected playlist."""
+        self._switch_page("playlists")
+        # give the page a moment to refresh before pushing the detail view
+        QTimer.singleShot(50, lambda: self._playlists_page.open_playlist(folder_path))
 
     # ── B2 cloud upload ──────────────────────────────────────────
 
@@ -812,24 +1125,24 @@ class DesktopApp(QMainWindow):
         self._b2_thread.upload_finished.connect(self._on_b2_finished)
         self._b2_thread.start()
 
-        self._discover_page.show_loading(
-            f"Uploading {len(files)} files to cloud…")
+        self._notify_status(
+            f"Uploading {len(files)} file(s) to cloud…",
+            15000,
+        )
 
     def _on_b2_progress(self, current: int, total: int, filename: str):
-        self._discover_page.show_loading(
-            f"Uploading to cloud… {current}/{total}: {filename}")
+        short = (filename or "")[:70]
+        self._notify_status(f"Cloud upload {current}/{total}: {short}", 4000)
 
     def _on_b2_file_done(self, filepath: str, success: bool, message: str):
         if not success and filepath == "":
             QMessageBox.warning(self, "Upload Error", message)
 
     def _on_b2_finished(self, uploaded: int, failed: int):
-        msg = f"Cloud upload complete: {uploaded} uploaded"
+        msg = f"Cloud upload finished: {uploaded} ok"
         if failed:
             msg += f", {failed} failed"
-        self._discover_page.show_loading(msg)
-        QTimer.singleShot(3000, lambda: self._discover_page.show_loading(
-            "Search for songs, artists or playlists above."))
+        self._notify_status(msg, 12000)
 
     # ── metadata check ─────────────────────────────────────────
 
@@ -859,21 +1172,38 @@ class DesktopApp(QMainWindow):
 
     # ── tray ───────────────────────────────────────────────────
 
+    def _show_main_window(self) -> None:
+        self.showNormal()
+        self.show()
+        self.raise_()
+        self.activateWindow()
+
     def _setup_tray(self):
         try:
             self._tray = QSystemTrayIcon(_make_tray_icon(), self)
             menu = QMenu()
-            menu.addAction(QAction("Show", self, triggered=self.show))
+            menu.addAction(QAction("Show", self, triggered=self._show_main_window))
             menu.addAction(QAction("Quit", self, triggered=QApplication.quit))
             self._tray.setContextMenu(menu)
-            self._tray.setToolTip("ñusic")
+            self._tray.setToolTip("Music")
+            self._tray.activated.connect(self._on_tray_activated)
             self._tray.show()
         except Exception as exc:
             log.warning("Tray icon setup: %s", exc)
 
+    def _on_tray_activated(self, reason):
+        if reason == QSystemTrayIcon.DoubleClick:
+            self._show_main_window()
+
     # ── close ──────────────────────────────────────────────────
 
     def closeEvent(self, event):
+        if getattr(self, "_global_hotkeys_stop", None):
+            try:
+                self._global_hotkeys_stop()
+            except Exception:
+                pass
+            self._global_hotkeys_stop = None
         config.set("window_size", [self.width(), self.height()])
         threads = [self._search_thread, self._album_thread, self._recommender_thread]
         if hasattr(self, '_b2_thread'):

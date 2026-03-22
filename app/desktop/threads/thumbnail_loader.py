@@ -1,8 +1,11 @@
 """
 Thread for loading thumbnails safely with proper cleanup.
 Emits the **full-resolution** pixmap so widgets can scale to their layout (no fixed 78px).
+
+Ogranicza równoległe pobieranie (domyślnie 4), żeby siatka wyników nie odpalała setek wątków naraz.
 """
 
+import threading
 import requests
 from PyQt5.QtCore import QThread, pyqtSignal, QMutex
 from PyQt5.QtGui import QPixmap
@@ -11,6 +14,9 @@ from PyQt5.QtCore import Qt
 
 # Max dimension to limit RAM; still plenty for crisp UI scaling
 _MAX_SIDE = 1024
+# Max równoległych pobrań miniatur (sieć + dekodowanie pixmapy)
+_MAX_CONCURRENT_DOWNLOADS = 4
+_download_slots = threading.Semaphore(_MAX_CONCURRENT_DOWNLOADS)
 
 
 class ThumbnailLoader(QThread):
@@ -27,6 +33,7 @@ class ThumbnailLoader(QThread):
         self._stop_flag = False
 
     def run(self):
+        _download_slots.acquire()
         try:
             self._mutex.lock()
             self._is_running = True
@@ -73,6 +80,7 @@ class ThumbnailLoader(QThread):
             self._mutex.lock()
             self._is_running = False
             self._mutex.unlock()
+            _download_slots.release()
 
     def stop(self):
         self._mutex.lock()

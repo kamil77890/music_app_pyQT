@@ -22,7 +22,7 @@ from PyQt5.QtWidgets import (
 )
 from app.desktop.ui.widgets.artist_circle_widget import ArtistCircleWidget
 from app.desktop.ui.widgets.album_card import AlbumCard
-from app.desktop.utils.helpers import get_field
+from app.desktop.utils.helpers import get_field, clean_video_id
 
 _EXTENDED_KW = frozenset([
     "extended","deluxe","special edition","expanded",
@@ -38,6 +38,89 @@ def _to_dict(entry):
         if hasattr(entry, m): return getattr(entry, m)()
     try: return vars(entry)
     except: return {}
+
+
+def _normalize_youtube_entry(raw) -> dict:
+    """Ensure videoId / id are set so downloads & play work after artist-filtered search."""
+    d = _to_dict(raw)
+    if not isinstance(d, dict):
+        d = {}
+    else:
+        d = dict(d)
+    vid = d.get("videoId") or d.get("video_id")
+    if isinstance(vid, dict):
+        vid = vid.get("videoId") or vid.get("video_id")
+    if not vid:
+        vid = d.get("id")
+    if isinstance(vid, dict):
+        vid = vid.get("videoId") or vid.get("video_id")
+    # Plain string id from API is often the 11-char video id
+    if not vid and isinstance(d.get("id"), str):
+        cand = d["id"].strip()
+        if len(cand) == 11 and all(c.isalnum() or c in "_-" for c in cand):
+            vid = cand
+    if vid is not None:
+        s = str(vid).strip()
+        cleaned = clean_video_id(s) if s else None
+        if cleaned:
+            if len(cleaned) == 11 and all(
+                c.isalnum() or c in "_-" for c in cleaned
+            ):
+                d["videoId"] = cleaned
+                if not d.get("id") or str(d.get("id")) in ("0", ""):
+                    d["id"] = cleaned
+            else:
+                d.setdefault("videoId", s)
+    return d
+
+
+def _coerce_album_row(a) -> dict:
+    """Ensure playlist_id / title / artist exist for AlbumCard (API + normalized shapes)."""
+    row = dict(a) if isinstance(a, dict) else {}
+    pid = (row.get("playlist_id") or "").strip()
+    if not pid:
+        nested = row.get("id")
+        if isinstance(nested, dict):
+            pid = (nested.get("playlistId") or nested.get("videoId") or "").strip()
+    if not pid:
+        pid = (row.get("playlistId") or "").strip()
+    row["playlist_id"] = pid
+    if not row.get("title"):
+        sn = row.get("snippet") or {}
+        row["title"] = sn.get("title") or row.get("title") or "Album"
+    if not row.get("artist"):
+        sn = row.get("snippet") or {}
+        row["artist"] = sn.get("channelTitle") or row.get("artist") or ""
+    tc = row.get("track_count", 0)
+    if not tc and row.get("contentDetails"):
+        tc = row["contentDetails"].get("itemCount") or 0
+    row["track_count"] = int(tc) if tc else 0
+    if not row.get("thumbnail_url"):
+        sn = row.get("snippet") or {}
+        th = sn.get("thumbnails") or {}
+        row["thumbnail_url"] = (
+            (th.get("high") or {}).get("url")
+            or (th.get("medium") or {}).get("url")
+            or (th.get("default") or {}).get("url")
+            or ""
+        )
+    if not row.get("album_type"):
+        row["album_type"] = "ALBUM"
+    return row
+
+
+def _youtube_url_if_no_file(d: dict) -> str:
+    fp = (d.get("file_path") or d.get("url") or "").strip()
+    if fp:
+        return fp
+    vid = d.get("videoId") or d.get("video_id") or d.get("id")
+    if isinstance(vid, dict):
+        vid = vid.get("videoId") or vid.get("video_id")
+    if vid:
+        c = clean_video_id(str(vid).strip())
+        if c and len(c) == 11:
+            return f"https://www.youtube.com/watch?v={c}"
+    return ""
 
 def _section_header(title):
     w = QWidget(); w.setStyleSheet("background:transparent;")
@@ -255,14 +338,9 @@ class MainDashboard(QWidget):
         go.clicked.connect(self._submit_search); sl.addWidget(go)
         lay.addWidget(sc, 1)
 
-        chart = QPushButton("Chart"); chart.setObjectName("topbar_link"); lay.addWidget(chart)
         rfr = QPushButton("🔄 Refresh Picks"); rfr.setObjectName("topbar_link")
         rfr.setToolTip("Refresh recommendations from your library")
         rfr.clicked.connect(self.refresh_requested); lay.addWidget(rfr)
-        lay.addSpacing(8)
-        for icon, tip in [("⚙","Settings"),("🔔","Notifications"),("💬","Messages")]:
-            b = QPushButton(icon); b.setObjectName("icon_btn"); b.setToolTip(tip); lay.addWidget(b)
-        add = QPushButton("+"); add.setObjectName("add_btn"); lay.addWidget(add)
         return bar
 
     # ── search ──────────────────────────────────────────────────
@@ -274,7 +352,7 @@ class MainDashboard(QWidget):
     # ── public API ───────────────────────────────────────────────
 
     def set_search_results(self, songs, albums, playlists, artist_filter=None):
-        dicts = [_to_dict(s) for s in songs]
+        dicts = [_normalize_youtube_entry(s) for s in songs]
         combined_albums = list(albums) + list(playlists)
         if artist_filter:
             af = artist_filter.lower().strip()
@@ -283,12 +361,27 @@ class MainDashboard(QWidget):
                 art = (get_field(d, "artist", "") or get_field(d, "channelTitle", "") or "")
                 return af in art.lower()
 
+            def _song_match_loose(d):
+                title = (get_field(d, "title", "") or "").lower()
+                art = (get_field(d, "artist", "") or get_field(d, "channelTitle", "") or "").lower()
+                if af in art or af in title:
+                    return True
+                for tok in af.split():
+                    if len(tok) > 2 and (tok in art or tok in title):
+                        return True
+                return False
+
             def _alb_match(a):
                 art = (a.get("artist") or
                        (a.get("snippet") or {}).get("channelTitle") or "")
                 return af in art.lower()
 
+            original = list(dicts)
             dicts = [d for d in dicts if _song_match(d)]
+            if not dicts:
+                dicts = [d for d in original if _song_match_loose(d)]
+            if not dicts:
+                dicts = original[:20]
             combined_albums = [a for a in combined_albums if _alb_match(a)]
         self._update_song_grid(dicts)
         self._update_album_shelf(combined_albums)
@@ -326,7 +419,8 @@ class MainDashboard(QWidget):
         from app.desktop.ui.widgets.song_card import SongCard
         for entry in songs:
             try:
-                card = SongCard(entry); card._entry_dict = entry
+                card = SongCard(entry, hide_hover_play_button=True)
+                card._entry_dict = entry
                 # ▶ = download
                 card.play_btn.clicked.connect(
                     lambda _, e=entry: self.song_card_download_clicked.emit(e))
@@ -336,9 +430,12 @@ class MainDashboard(QWidget):
                     if ev.button() == Qt.LeftButton: self._toggle_card(c, ed)
                     o(ev)
                 card.mousePressEvent = _h
-                # double-click = play
-                def _dbl(ev, fp=entry.get("file_path",""), ed=entry):
-                    if ev.button() == Qt.LeftButton and fp:
+                # double-click = play (YouTube: use watch URL from video id)
+                def _dbl(ev, ed=entry):
+                    if ev.button() != Qt.LeftButton:
+                        return
+                    fp = _youtube_url_if_no_file(ed)
+                    if fp:
                         self.song_card_double_clicked.emit(fp, ed)
                 card.mouseDoubleClickEvent = _dbl
                 self._song_cards.append(card)
@@ -399,12 +496,22 @@ class MainDashboard(QWidget):
         self._album_scroll.setFixedHeight(min(len(filtered),3)*98+10)
         for a in filtered:
             try:
-                card = AlbumCard(playlist_id=a.get("playlist_id",""),title=a.get("title",""),
-                    artist=a.get("artist",""),track_count=a.get("track_count",0),
-                    album_type=a.get("album_type","ALBUM"),thumbnail_url=a.get("thumbnail_url",""))
+                row = _coerce_album_row(a)
+                if not row.get("playlist_id"):
+                    log.warning("Skipping album row without playlist_id: %s", row.get("title"))
+                    continue
+                card = AlbumCard(
+                    playlist_id=row["playlist_id"],
+                    title=row.get("title", ""),
+                    artist=row.get("artist", ""),
+                    track_count=row.get("track_count", 0),
+                    album_type=row.get("album_type", "ALBUM"),
+                    thumbnail_url=row.get("thumbnail_url", ""),
+                )
                 card.album_clicked.connect(self.album_clicked)
                 self._album_inner_lay.addWidget(card)
-            except Exception as exc: log.warning("Album card creation error: %s", exc)
+            except Exception as exc:
+                log.warning("Album card creation error: %s", exc)
         self._album_inner_lay.addStretch()
 
     def update_album_card_tracks(self, playlist_id, tracks):

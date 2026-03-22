@@ -19,7 +19,9 @@ class PlaylistCard(QFrame):
     """Spotify-style playlist card with cover grid"""
 
     delete_requested = pyqtSignal(str)  # folder_path
-    play_requested = pyqtSignal(str)  # folder_path
+    play_requested   = pyqtSignal(str)  # folder_path
+    random_play_requested = pyqtSignal(str)  # folder_path — play random track
+    open_requested   = pyqtSignal(str)  # folder_path — emitted on single click
 
     COVER_TILE = 66
 
@@ -129,6 +131,25 @@ class PlaylistCard(QFrame):
         self.play_btn.setVisible(False)
         self.play_btn.raise_()  # Ensure it's on top
         self.play_btn.clicked.connect(self.on_play_clicked)
+
+        self.random_btn = QPushButton("🎲")
+        self.random_btn.setFixedSize(32, 32)
+        self.random_btn.setToolTip("Play random song from playlist")
+        self.random_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: rgba(255,255,255,0.12);
+                color: #e8eaf0;
+                border: none;
+                border-radius: 16px;
+                font-size: 14px;
+            }}
+            QPushButton:hover {{
+                background-color: rgba(255,255,255,0.22);
+            }}
+        """)
+        self.random_btn.setVisible(False)
+        self.random_btn.setParent(self)
+        self.random_btn.clicked.connect(self._on_random_clicked)
         
         # Text content container
         text_container = QWidget()
@@ -165,6 +186,9 @@ class PlaylistCard(QFrame):
     def on_play_clicked(self):
         """Handle play button click"""
         self.play_requested.emit(self.folder_path)
+
+    def _on_random_clicked(self):
+        self.random_play_requested.emit(self.folder_path)
     
     def show_context_menu(self, position):
         """Show context menu for playlist card"""
@@ -174,6 +198,9 @@ class PlaylistCard(QFrame):
         play_action = QAction("▶ Play", self)
         play_action.triggered.connect(self.on_play_clicked)
         menu.addAction(play_action)
+        rand_action = QAction("🎲 Random song", self)
+        rand_action.triggered.connect(self._on_random_clicked)
+        menu.addAction(rand_action)
         
         menu.addSeparator()
         
@@ -189,12 +216,13 @@ class PlaylistCard(QFrame):
         self.delete_requested.emit(self.folder_path)
     
     def resizeEvent(self, event):
-        """Handle resize to position play button"""
+        """Handle resize to position play + random buttons"""
         super().resizeEvent(event)
-        # Position play button in bottom-right of cover grid
-        btn_y = 12 + 140 - 50  # 12px margin + container height (140) - btn offset
-        btn_x = self.width() - 52  # Right align with margin
-        self.play_btn.move(btn_x, btn_y)
+        btn_y = 12 + 140 - 50
+        self.random_btn.move(self.width() - 90, btn_y)
+        self.play_btn.move(self.width() - 48, btn_y)
+        self.random_btn.raise_()
+        self.play_btn.raise_()
     
     def load_playlist_info(self):
         """Load playlist information from JSON"""
@@ -414,6 +442,7 @@ class PlaylistCard(QFrame):
     def animate_hover(self):
         """Animate hover effect"""
         self.play_btn.setVisible(True)
+        self.random_btn.setVisible(True)
         
         # Scale animation
         animation = QPropertyAnimation(self, b"geometry")
@@ -426,6 +455,7 @@ class PlaylistCard(QFrame):
     def animate_leave(self):
         """Animate leave effect"""
         self.play_btn.setVisible(False)
+        self.random_btn.setVisible(False)
         
         animation = QPropertyAnimation(self, b"geometry")
         animation.setDuration(200)
@@ -453,6 +483,11 @@ class PlaylistCard(QFrame):
             }}
         """)
     
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self.open_requested.emit(self.folder_path)
+        super().mousePressEvent(event)
+
     def cleanup(self):
         """Clean up all resources"""
         self.cleanup_thumbnail_loader()

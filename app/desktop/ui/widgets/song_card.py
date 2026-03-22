@@ -21,11 +21,12 @@ def _hq_url(url):
 class SongCard(QFrame):
     download_clicked = pyqtSignal(object)
 
-    def __init__(self, entry, parent=None):
+    def __init__(self, entry, parent=None, hide_hover_play_button: bool = False):
         super().__init__(parent)
         if entry is None:
             raise ValueError("Entry cannot be None")
         self.entry = entry
+        self._hide_hover_play = bool(hide_hover_play_button)
         self.selected = False
         self.hovered = False
         self.download_status = None
@@ -61,6 +62,7 @@ class SongCard(QFrame):
             "background:transparent;border-radius:10px;")
         al.addWidget(self.thumb_label)
         main_layout.addWidget(self.art_container)
+
         self.play_btn = QPushButton("▶")
         self.play_btn.setFixedSize(44, 44)
         self.play_btn.setStyleSheet(
@@ -69,6 +71,7 @@ class SongCard(QFrame):
             f"QPushButton:hover{{background-color:#1ED760;}}")
         self.play_btn.setVisible(False)
         self.play_btn.setParent(self)
+
         text_container = QWidget()
         text_container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         text_container.setStyleSheet("background:transparent;border-radius:6px;")
@@ -93,9 +96,14 @@ class SongCard(QFrame):
         tl.addWidget(self.artist_label)
         main_layout.addWidget(text_container)
 
+        for w in (self.art_container, self.thumb_label, self.title_label,
+                  self.artist_label, text_container):
+            w.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self.play_btn.move(self.width() - 54, 10 + self._art_h - 54)
+        self.play_btn.raise_()
         if self._thumb_source is not None and not self._thumb_source.isNull():
             self._apply_thumbnail_scale()
 
@@ -112,7 +120,7 @@ class SongCard(QFrame):
                     self.set_thumbnail(px)
                     return
             except Exception: pass
-        raw = get_field(self.entry,"cover","") or get_field(self.entry,"thumbnail","")
+        raw = get_field(self.entry,"cover","") or get_field(self.entry,"thumbnail","") or get_field(self.entry,"high_res_thumbnail","")
         if not raw:
             self.set_placeholder(); return
         self.cleanup_thumbnail_loader()
@@ -141,17 +149,11 @@ class SongCard(QFrame):
         self._apply_thumbnail_scale()
 
     def _apply_thumbnail_scale(self):
-        """Scale cover to the art area: fit inside width × height, no stretch distortion."""
         if self._thumb_source is None or self._thumb_source.isNull():
             return
         w = max(self.thumb_label.width(), self.art_container.width(), 1)
         h = max(self.thumb_label.height(), self._art_h, 1)
-        scaled = self._thumb_source.scaled(
-            w,
-            h,
-            Qt.KeepAspectRatio,
-            Qt.SmoothTransformation,
-        )
+        scaled = self._thumb_source.scaled(w, h, Qt.KeepAspectRatio, Qt.SmoothTransformation)
         self.thumb_label.setPixmap(scaled)
 
     def set_placeholder(self, *_):
@@ -209,11 +211,18 @@ class SongCard(QFrame):
         self.selected = selected; self.update_style()
 
     def enterEvent(self, e):
-        self.hovered = True; self.update_style(); self.play_btn.setVisible(True); super().enterEvent(e)
+        self.hovered = True
+        self.update_style()
+        if not self._hide_hover_play:
+            self.play_btn.setVisible(True)
+        super().enterEvent(e)
 
     def leaveEvent(self, e):
-        self.hovered = False; self.update_style()
-        if not self.selected and not self.download_status: self.play_btn.setVisible(False)
+        self.hovered = False
+        self.update_style()
+        if not self._hide_hover_play:
+            if not self.selected and not self.download_status:
+                self.play_btn.setVisible(False)
         super().leaveEvent(e)
 
     def update_style(self):

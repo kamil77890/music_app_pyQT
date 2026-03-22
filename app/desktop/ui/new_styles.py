@@ -19,6 +19,12 @@ QMainWindow, QWidget {
     font-size: 13px;
 }
 
+QStatusBar {
+    background-color: #12121a;
+    border: none;
+    border-top: 0px solid transparent;
+}
+
 QDialog {
     background-color: #111118;
     color: #e8eaf0;

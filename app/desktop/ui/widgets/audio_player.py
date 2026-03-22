@@ -2,7 +2,7 @@ import logging
 import os
 import random
 from PyQt5.QtWidgets import (
-    QFrame, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QSlider
+    QFrame, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QSlider,
 )
 from PyQt5.QtGui import QPixmap
 from PyQt5.QtCore import Qt, QTimer, QUrl, pyqtSignal
@@ -15,9 +15,13 @@ log = logging.getLogger(__name__)
 class AudioPlayerWidget(QFrame):
     
     playback_state_changed = pyqtSignal(bool)
+    # Aktualny utwór zmieniony (next/prev/automatycznie) — UI musi zsynchronizować „now playing”
+    track_changed = pyqtSignal(str, dict)
     
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.setObjectName("audio_player_engine")
+        self.setStyleSheet("QFrame#audio_player_engine{background:#000000;border:none;}")
         self.current_song_path = None
         self.current_playlist = [] 
         self.shuffle_mode = False
@@ -161,7 +165,7 @@ class AudioPlayerWidget(QFrame):
         self.shuffle_btn = QPushButton(shuffle_icon)
         self.shuffle_btn.setFixedSize(36, 36)
         self.shuffle_btn.setProperty("player", True)
-        self.shuffle_btn.setToolTip("Toggle Shuffle")
+        self.shuffle_btn.setToolTip("Shuffle: wyłączony")
         self.shuffle_btn.clicked.connect(self.toggle_shuffle)
         
         # Repeat Button
@@ -278,9 +282,12 @@ class AudioPlayerWidget(QFrame):
             position = int((value / 1000) * self.player.duration())
             self.player.setPosition(position)
     
-    def toggle_shuffle(self):
-        self.shuffle_mode = not self.shuffle_mode
+    def toggle_shuffle(self) -> None:
+        """Tylko dwa stany: wyłączony / włączony (jak przełącznik)."""
+        self.shuffle_mode = not bool(self.shuffle_mode)
         self.update_shuffle_button_style()
+        self.shuffle_btn.setToolTip(
+            "Shuffle: włączony" if self.shuffle_mode else "Shuffle: wyłączony")
         log.debug("Shuffle mode: %s", "ON" if self.shuffle_mode else "OFF")
     
     def update_shuffle_button_style(self):
@@ -410,7 +417,9 @@ class AudioPlayerWidget(QFrame):
                 if fp == file_path:
                     self.current_index = i
                     break
-            
+
+            meta_out = dict(metadata) if metadata is not None else {}
+            self.track_changed.emit(file_path, meta_out)
             self.playback_state_changed.emit(True)
             return True
             
@@ -514,11 +523,25 @@ class AudioPlayerWidget(QFrame):
             self.play_btn.setText("⏸")
         else:
             self.play_btn.setText("▶")
+        # Dolny pasek mini-playera: ikona play/pause musi iść w parze ze stanem odtwarzacza
+        self.playback_state_changed.emit(state == QMediaPlayer.PlayingState)
     
     def clear_playlist(self):
         self.playlist = []
+        self.current_playlist = []
         self.current_index = -1
         self.random_history = []
+
+    def replace_playlist(self, new_pairs):
+        """Replace ordered queue (e.g. after reorder in UI). Keeps current track index in sync."""
+        self.playlist = list(new_pairs)
+        self.current_playlist = list(new_pairs)
+        if self.current_song_path:
+            for i, (fp, _) in enumerate(self.playlist):
+                if fp == self.current_song_path:
+                    self.current_index = i
+                    return
+        self.current_index = -1
     
     def add_to_playlist(self, file_path, metadata):
         self.playlist.append((file_path, metadata))
@@ -549,19 +572,24 @@ class AudioPlayerWidget(QFrame):
                 self.play_song(file_path, metadata)
     
     def set_volume(self, value):
+        # Zmiana suwakiem przy wyciszeniu = przywróć dźwięk z nową wartością
+        if self.is_muted:
+            self.is_muted = False
+            self.volume_btn.setText("🔊")
         self.player.setVolume(value)
-        if not self.is_muted:
-            self.previous_volume = value
-    
+        self.previous_volume = value
+
     def toggle_mute(self):
         if self.is_muted:
             self.player.setVolume(self.previous_volume)
+            self.volume_slider.blockSignals(True)
             self.volume_slider.setValue(self.previous_volume)
+            self.volume_slider.blockSignals(False)
             self.is_muted = False
             self.volume_btn.setText("🔊")
         else:
             self.previous_volume = self.player.volume()
             self.player.setVolume(0)
-            self.volume_slider.setValue(0)
+            # Suwak zostaje na zapisanej poziomie (wizualnie), nie skacze do 0
             self.is_muted = True
             self.volume_btn.setText("🔇")

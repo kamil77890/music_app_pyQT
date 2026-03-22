@@ -235,6 +235,69 @@ get_mp3_metadata = get_audio_metadata
 _AUDIO_EXTS = {".mp3", ".m4a", ".mp4", ".flac", ".wav", ".ogg"}
 
 
+def extract_embedded_cover_bytes(file_path: str) -> Optional[bytes]:
+    """
+    Read embedded album art from MP3 (APIC) or M4A/MP4 (covr).
+    Returns raw image bytes or None.
+    """
+    if not file_path or not os.path.exists(file_path):
+        return None
+    ext = os.path.splitext(file_path)[1].lower()
+    if ext == ".mp3":
+        try:
+            id3 = ID3(file_path)
+        except ID3NoHeaderError:
+            return None
+        except Exception:
+            return None
+        try:
+            covers = []
+            for apic in id3.getall("APIC"):
+                if getattr(apic, "data", None) and len(apic.data) > 256:
+                    covers.append({"data": apic.data, "size": len(apic.data)})
+            for key in list(id3.keys()):
+                if key.startswith("APIC") and hasattr(id3[key], "data"):
+                    frame = id3[key]
+                    if getattr(frame, "data", None) and len(frame.data) > 256:
+                        covers.append({"data": frame.data, "size": len(frame.data)})
+            if covers:
+                covers.sort(key=lambda x: x["size"], reverse=True)
+                return covers[0]["data"]
+        except Exception:
+            return None
+    elif ext in ("m4a", "mp4"):
+        try:
+            audio = MP4(file_path)
+            if "covr" in audio and audio["covr"]:
+                cover = audio["covr"][0]
+                if hasattr(cover, "data"):
+                    data = cover.data
+                else:
+                    data = bytes(cover)
+                if data and len(data) > 256:
+                    return data
+        except Exception:
+            return None
+    return None
+
+
+def load_cover_pixmap_from_file(file_path: str):
+    """
+    Load embedded cover art as QPixmap (for UI). Returns None if missing/invalid.
+    """
+    try:
+        from PyQt5.QtGui import QPixmap
+    except Exception:
+        return None
+    raw = extract_embedded_cover_bytes(file_path)
+    if not raw:
+        return None
+    pm = QPixmap()
+    if pm.loadFromData(raw) and not pm.isNull():
+        return pm
+    return None
+
+
 def scan_for_metadata_issues(download_path: str) -> list:
     """
     Walk `download_path`, read metadata for every audio file,

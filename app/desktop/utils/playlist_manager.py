@@ -229,6 +229,35 @@ class PlaylistManager:
         except Exception as e:
             log.error("Error removing song from playlist: %s", e)
             return False
+
+    @staticmethod
+    def remove_song_by_file_path(folder_path: str, file_path: str) -> bool:
+        """Remove the entry whose file_path matches (normalized compare)."""
+        try:
+            def _norm(p: str) -> str:
+                try:
+                    return os.path.normcase(os.path.normpath(p))
+                except OSError:
+                    return os.path.normcase(p or "")
+
+            target = _norm(file_path)
+            if not target:
+                return False
+            playlist_data = PlaylistManager.get_playlist_info(folder_path)
+            songs = playlist_data.get("songs", [])
+            for i, s in enumerate(songs):
+                fp = s.get("file_path", "")
+                if fp and _norm(fp) == target:
+                    songs.pop(i)
+                    playlist_data["modified"] = os.path.getctime(folder_path)
+                    json_path = os.path.join(folder_path, "playlist.json")
+                    with open(json_path, 'w', encoding='utf-8') as f:
+                        json.dump(playlist_data, f, indent=2, ensure_ascii=False)
+                    return True
+            return False
+        except Exception as e:
+            log.error("Error removing song by path: %s", e)
+            return False
     
     @staticmethod
     def update_song_metadata(folder_path: str, song_index: int, metadata: Dict[str, Any]) -> bool:

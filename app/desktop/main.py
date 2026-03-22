@@ -11,8 +11,8 @@ def main():
     app.setStyle("Fusion")
     
     # Set application metadata
-    app.setApplicationName("YT Music Downloader Pro")
-    app.setApplicationDisplayName("YT Music Downloader Pro")
+    app.setApplicationName("Music")
+    app.setApplicationDisplayName("Music")
     
     window = DesktopApp()
     window.show()

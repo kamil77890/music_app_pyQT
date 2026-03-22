@@ -34,7 +34,7 @@ class RecommenderThread(QThread):
     """
     Signals
     -------
-    recommendations_ready(queries: list[str])
+    recommendations_ready(queries: list[str], library_song_count: int)
         Top search query strings derived from the preference map.
     preference_map_ready(pref_map: dict)
         Raw tag → score map for optional display / debugging.
@@ -42,7 +42,7 @@ class RecommenderThread(QThread):
     error(message: str)
     """
 
-    recommendations_ready = pyqtSignal(list)   # list[str]
+    recommendations_ready = pyqtSignal(list, int)  # queries, len(library songs)
     preference_map_ready  = pyqtSignal(dict)
     progress              = pyqtSignal(int, int)
     error                 = pyqtSignal(str)
@@ -67,15 +67,16 @@ class RecommenderThread(QThread):
     def run(self):
         try:
             songs = self._scan_library()
+            n_lib = len(songs)
             if not songs:
-                self.recommendations_ready.emit([])
+                self.recommendations_ready.emit([], 0)
                 return
 
             pref_map = self._build_preference_map(songs)
             self.preference_map_ready.emit(pref_map)
 
             queries = self._generate_queries(pref_map)
-            self.recommendations_ready.emit(queries)
+            self.recommendations_ready.emit(queries, n_lib)
         except Exception as exc:
             self.error.emit(str(exc))
 
@@ -109,7 +110,9 @@ class RecommenderThread(QThread):
                 })
             except Exception:
                 pass
-            self.progress.emit(i + 1, total)
+            # Rzadziej emituj — setki plików × sygnał = przyciąganie głównego wątku
+            if total <= 1 or i == 0 or (i + 1) % 10 == 0 or (i + 1) == total:
+                self.progress.emit(i + 1, total)
 
         return songs
 
