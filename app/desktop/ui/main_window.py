@@ -328,6 +328,7 @@ class DesktopApp(QMainWindow):
         self._right_panel_visible = False
         self._initial_rec_done    = False
         self._artist_only_search  = False
+        self._last_lib_audio_count = -1
 
         w, h = config.get("window_size", [1440, 900])
         self.setFixedSize(int(w), int(h))
@@ -367,6 +368,9 @@ class DesktopApp(QMainWindow):
         self._setup_shortcuts()
         self._global_hotkeys_stop = None
         self._setup_global_hotkeys()
+
+        QTimer.singleShot(2500, self._prime_library_watcher)
+        QTimer.singleShot(150, self._log_library_paths_startup)
 
     def _center_window(self):
         screen = QApplication.primaryScreen().geometry()
@@ -480,6 +484,7 @@ class DesktopApp(QMainWindow):
         self._playlists_page.playlist_random_requested.connect(
             self._play_random_from_playlist)
         self._playlists_page.song_play_requested.connect(self._play_song)
+        self._playlists_page.library_refreshed.connect(self._load_sidebar_library)
         self._stack.addWidget(self._playlists_page)
 
         self._splitter.addWidget(self._stack)
@@ -807,6 +812,7 @@ class DesktopApp(QMainWindow):
             parent=self,
         )
         dlg.download_finished.connect(self._on_download_done)
+        dlg.library_updated.connect(self._on_download_library_delta)
         dlg.show()
 
     def _download_album_as_playlist(self, tracks: list):
@@ -828,25 +834,102 @@ class DesktopApp(QMainWindow):
         dlg._pl_name.setText(album_name)
         dlg._pl_name.setVisible(True)
         dlg.download_finished.connect(self._on_download_done)
+        dlg.library_updated.connect(self._on_download_library_delta)
         dlg.show()
+
+    @pyqtSlot(int)
+    def _on_download_library_delta(self, _added: int):
+        try:
+            from app.desktop.utils.auto_playlist import count_library_audio_files
+
+            if os.path.isdir(config.get_download_path()):
+                self._last_lib_audio_count = count_library_audio_files()
+        except Exception:
+            pass
+        self._load_sidebar_library()
+        if self._current_page == "playlists":
+            self._playlists_page._load_all_songs(skip_disk_sync=True)
 
     @pyqtSlot(str)
     def _on_download_done(self, playlist_name: str):
         QTimer.singleShot(400, self._load_sidebar_library)
         QTimer.singleShot(500, self._load_daily_artists_from_library)
-        QTimer.singleShot(600, self._sync_auto_playlist)
         if self._current_page == "playlists":
-            QTimer.singleShot(800, self._playlists_page.refresh)
+            QTimer.singleShot(300, self._playlists_page_light_refresh_after_batch)
 
     def _sync_auto_playlist(self):
         try:
-            from app.desktop.utils.auto_playlist import get_auto_playlist_manager
-            mgr   = get_auto_playlist_manager(config.get_download_path())
-            added = mgr.sync_from_library(config.get_download_path())
+            from app.desktop.utils.auto_playlist import (
+                get_auto_playlist_manager,
+                count_library_audio_files,
+            )
+            dp = config.get_download_path()
+            mgr   = get_auto_playlist_manager(dp)
+            added = mgr.sync_from_library(dp)
             if added:
                 log.info("Synced %d new song(s) to auto-playlist", added)
+            if os.path.isdir(dp):
+                self._last_lib_audio_count = count_library_audio_files()
         except Exception as exc:
             log.error("_sync_auto_playlist: %s", exc)
+
+    def _log_library_paths_startup(self):
+        """Jednorazowo: skąd bierze się ścieżka biblioteki (ważne gdy ~/.yt-music-downloader/config.json nadpisuje domyśl)."""
+        try:
+            from app.desktop.config import (
+                config,
+                CONFIG_FILE,
+                DEFAULT_DOWNLOAD_PATH,
+            )
+
+            dp = config.get_download_path()
+            log.info(
+                "Library paths: resolved download_path=%s | default in app=%s | config file=%s",
+                dp,
+                DEFAULT_DOWNLOAD_PATH,
+                CONFIG_FILE,
+            )
+        except Exception as exc:
+            log.warning("Library path log: %s", exc)
+
+    def _prime_library_watcher(self):
+        try:
+            from app.desktop.utils.auto_playlist import count_library_audio_files
+
+            if os.path.isdir(config.get_download_path()):
+                self._last_lib_audio_count = count_library_audio_files()
+            else:
+                self._last_lib_audio_count = 0
+        except Exception:
+            self._last_lib_audio_count = 0
+        self._lib_pulse_timer = QTimer(self)
+        self._lib_pulse_timer.timeout.connect(self._pulse_library_check)
+        self._lib_pulse_timer.start(45_000)
+
+    def _playlists_page_light_refresh_after_batch(self):
+        try:
+            self._playlists_page._load_playlists()
+            self._playlists_page._load_all_songs(skip_disk_sync=True)
+        except Exception as exc:
+            log.debug("playlists light refresh: %s", exc)
+
+    def _pulse_library_check(self):
+        try:
+            from app.desktop.utils.auto_playlist import count_library_audio_files
+
+            n = count_library_audio_files()
+            prev = self._last_lib_audio_count
+            self._last_lib_audio_count = n
+            if prev < 0:
+                return
+            if n == prev:
+                return
+            self._sync_auto_playlist()
+            self._load_sidebar_library()
+            if self._current_page == "playlists":
+                self._playlists_page._load_all_songs(skip_disk_sync=True)
+        except Exception as exc:
+            log.debug("library pulse: %s", exc)
 
     # ── playback ───────────────────────────────────────────────
 
@@ -1067,11 +1150,12 @@ class DesktopApp(QMainWindow):
             path = config.get_download_path()
             if not os.path.isdir(path):
                 return
+            from app.desktop.utils.playlist_manager import PlaylistManager
+
+            pl_paths = PlaylistManager.iter_playlist_folder_paths(path)
             folders = sorted(
-                (d, os.path.join(path, d))
-                for d in os.listdir(path)
-                if os.path.isdir(os.path.join(path, d))
-                and not d.startswith(".")
+                ((os.path.basename(p), p) for p in pl_paths),
+                key=lambda t: t[0].lower(),
             )
             self._sidebar.populate_library(folders)
         except Exception as exc:
@@ -1205,6 +1289,10 @@ class DesktopApp(QMainWindow):
                 pass
             self._global_hotkeys_stop = None
         config.set("window_size", [self.width(), self.height()])
+        try:
+            self._playlists_page.shutdown_background_threads()
+        except Exception:
+            pass
         threads = [self._search_thread, self._album_thread, self._recommender_thread]
         if hasattr(self, '_b2_thread'):
             threads.append(self._b2_thread)
@@ -1213,7 +1301,7 @@ class DesktopApp(QMainWindow):
                 try:
                     t.stop()
                     t.quit()
-                    t.wait(1000)
+                    t.wait(5000)
                 except Exception:
                     pass
         event.accept()

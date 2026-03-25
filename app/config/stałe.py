@@ -38,11 +38,14 @@ def _load_project_dotenv() -> None:
 
 _load_project_dotenv()
 
+# Zgodne z domyślnym `download_path` w app/desktop/config.py (gdy brak FILEPATH w .env).
+_DEFAULT_LOCAL_SONGS_DIR = str(Path.home() / "Music" / "YT Music")
+
 
 class Parameters:
     def __init__(self):
         self.download_dir = os.environ.get(
-            'FILEPATH', os.path.join(os.getcwd(), 'app', 'songs'))
+            "FILEPATH", _DEFAULT_LOCAL_SONGS_DIR)
         self.json_file = os.environ.get(
             'JSONFILE', os.path.join(self.download_dir, 'songs.json'))
         self.subtitles_files = os.environ.get(
@@ -50,7 +53,7 @@ class Parameters:
 
     @staticmethod
     def get_download_dir():
-        return os.environ.get('FILEPATH', os.path.join(os.getcwd(), 'app', 'songs'))
+        return os.environ.get("FILEPATH", _DEFAULT_LOCAL_SONGS_DIR)
 
     @staticmethod
     def get_subtitles_dir():

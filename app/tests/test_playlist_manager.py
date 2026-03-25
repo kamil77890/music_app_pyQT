@@ -120,6 +120,21 @@ class TestPlaylistManager:
         names = {p["name"] for p in playlists}
         assert names == {"Rock", "Pop", "Jazz"}
 
+    def test_get_all_playlists_expands_playlists_container(self, tmp_library):
+        from app.desktop.utils.playlist_manager import PlaylistManager
+
+        container = os.path.join(tmp_library, "playlists")
+        os.makedirs(container)
+        nested = os.path.join(container, "Inside")
+        PlaylistManager.create_playlist(nested, "Inside")
+
+        playlists = PlaylistManager.get_all_playlists(tmp_library)
+        names = {p["name"] for p in playlists}
+        paths = {os.path.normpath(p["folder_path"]) for p in playlists}
+        assert "Inside" in names
+        assert os.path.normpath(nested) in paths
+        assert os.path.normpath(container) not in paths
+
     def test_ensure_default_playlist(self, tmp_library):
         from app.desktop.utils.playlist_manager import (
             PlaylistManager, DEFAULT_PLAYLIST_NAME,

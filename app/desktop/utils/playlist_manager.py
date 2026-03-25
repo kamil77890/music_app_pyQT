@@ -156,8 +156,26 @@ class PlaylistManager:
             }
     
     @staticmethod
-    def add_song_to_playlist(folder_path: str, file_path: str, metadata: Optional[Dict] = None) -> bool:
-        """Add a song reference to playlist JSON"""
+    def _norm_file_path(p: str) -> str:
+        try:
+            return os.path.normcase(os.path.abspath(p))
+        except OSError:
+            return p
+
+    @staticmethod
+    def add_song_to_playlist(
+        folder_path: str,
+        file_path: str,
+        metadata: Optional[Dict] = None,
+        *,
+        dedupe_paths_only: bool = False,
+    ) -> bool:
+        """
+        Add a song reference to playlist JSON.
+
+        dedupe_paths_only=True — tylko ten sam plik (znormalizowana ścieżka) jest uznawany za duplikat;
+        ignoruje duplikat po tytule+wykonawcy (np. dwa różne MP3 z tym samym tagiem).
+        """
         try:
             playlist_data = PlaylistManager.get_playlist_info(folder_path)
             
@@ -190,11 +208,17 @@ class PlaylistManager:
             }
             
             # Check if song already exists
+            new_key = PlaylistManager._norm_file_path(file_path)
             for existing_song in playlist_data["songs"]:
-                if (existing_song.get("file_path") == file_path or 
-                    (existing_song.get("title") == song_entry["title"] and 
-                     existing_song.get("artist") == song_entry["artist"])):
+                ep = existing_song.get("file_path")
+                if ep and PlaylistManager._norm_file_path(ep) == new_key:
                     return False
+                if not dedupe_paths_only:
+                    if (
+                        existing_song.get("title") == song_entry["title"]
+                        and existing_song.get("artist") == song_entry["artist"]
+                    ):
+                        return False
             
             # Add song
             playlist_data["songs"].append(song_entry)
@@ -286,21 +310,52 @@ class PlaylistManager:
             return False
     
     @staticmethod
+    def iter_playlist_folder_paths(base_path: str) -> List[str]:
+        """
+        Katalogi playlist pod base_path:
+        - bezpośrednie podfoldery (np. «All Songs», «Moja lista»),
+        - jeśli istnieje folder ``playlists`` bez ``playlist.json``, traktuj go jako
+          kontener i dodaj jego **podfoldery** (np. ``.../songs/playlists/Rock``).
+        """
+        base_path = os.path.abspath(base_path)
+        if not os.path.isdir(base_path):
+            return []
+        out: List[str] = []
+        try:
+            names = sorted(os.listdir(base_path), key=str.lower)
+        except OSError:
+            return []
+        for item in names:
+            item_path = os.path.join(base_path, item)
+            if not os.path.isdir(item_path):
+                continue
+            jp = os.path.join(item_path, "playlist.json")
+            if item.lower() == "playlists" and not os.path.isfile(jp):
+                try:
+                    for sub in sorted(os.listdir(item_path), key=str.lower):
+                        sub_path = os.path.join(item_path, sub)
+                        if os.path.isdir(sub_path):
+                            out.append(sub_path)
+                except OSError as e:
+                    log.debug("iter_playlist_folder_paths playlists/: %s", e)
+                continue
+            out.append(item_path)
+        return out
+
+    @staticmethod
     def get_all_playlists(base_path: str) -> List[Dict[str, Any]]:
         """Get all playlists from base directory"""
         playlists = []
-        
+
         if not os.path.exists(base_path):
             return playlists
-        
-        for item in os.listdir(base_path):
-            item_path = os.path.join(base_path, item)
-            if os.path.isdir(item_path):
-                playlist_data = PlaylistManager.get_playlist_info(item_path)
-                playlist_data["folder_path"] = item_path
-                playlist_data["folder_name"] = item
-                playlists.append(playlist_data)
-        
+
+        for item_path in PlaylistManager.iter_playlist_folder_paths(base_path):
+            playlist_data = PlaylistManager.get_playlist_info(item_path)
+            playlist_data["folder_path"] = item_path
+            playlist_data["folder_name"] = os.path.basename(item_path)
+            playlists.append(playlist_data)
+
         return playlists
     
     @staticmethod

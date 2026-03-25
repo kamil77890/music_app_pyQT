@@ -16,7 +16,11 @@ from app.logic.downloader.cleanup import cleanup_temp_files
 from app.logic.downloader.yt_dlp_client import download_song_mp3
 
 
-DOWNLOAD_DIR = Parameters.get_download_dir()
+def _download_dir() -> str:
+    """Świeża ścieżka przy każdym wywołaniu (FILEPATH / domyślna biblioteka)."""
+    return Parameters.get_download_dir()
+
+
 FILE_SEARCH_WINDOW_SECONDS = 10
 
 
@@ -138,7 +142,7 @@ def download_song(videoId: str, id: str = "0", format_ext: str = "mp3", base_pat
         else:
             id = sanitize_filename(id)
         
-        base = base_path or DOWNLOAD_DIR
+        base = base_path or _download_dir()
         file_path = os.path.join(base, f"{id}.{format_ext}")
         srt_path = os.path.join(base, f"{id}.en.srt")
         
@@ -200,7 +204,7 @@ def process_playlist_entry(entry: dict, index: int, playlist_dir: str, audio_for
 
 def create_playlist_zip(processed_files: list, playlist_title: str) -> str:
     zip_name = sanitize_filename(playlist_title) + ".zip"
-    zip_path = os.path.join(DOWNLOAD_DIR, zip_name)
+    zip_path = os.path.join(_download_dir(), zip_name)
     
     with zipfile.ZipFile(zip_path, 'w') as zipf:
         for file in processed_files:
@@ -213,7 +217,7 @@ def create_playlist_zip(processed_files: list, playlist_title: str) -> str:
 def download_playlist(playlistId: str, audio_format: str = "mp3") -> str:
     try:
         playlist_url = f"https://www.youtube.com/playlist?list={playlistId}"
-        playlist_dir = DOWNLOAD_DIR
+        playlist_dir = _download_dir()
         os.makedirs(playlist_dir, exist_ok=True)
         
         info = download_song_mp3(playlist_url, playlist_dir, audio_format=audio_format, quality="320")

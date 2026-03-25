@@ -108,7 +108,12 @@ class DownloadThread(QThread):
                 safe_title  = clean_filename(title)
                 safe_artist = clean_filename(artist)
 
-                path = download_song(video_id, safe_title, format_ext="mp3")
+                path = download_song(
+                    video_id,
+                    safe_title,
+                    format_ext="mp3",
+                    base_path=self.download_path,
+                )
 
                 if path and os.path.exists(path):
                     # rename to "Artist - Title.mp3"

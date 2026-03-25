@@ -7,8 +7,15 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+# Jedna biblioteka: domyślnie pusto — wszystko pod download_path (np. …/songs + «All Songs»).
+DEFAULT_LIBRARY_SCAN_EXTRA_PATHS: List[str] = []
+
+# Domyślny katalog: pobrania MP3, playlisty i folder «All Songs».
+DEFAULT_DOWNLOAD_PATH = str(Path.home() / "Music" / "YT Music")
+
 DEFAULT_CONFIG = {
-    "download_path": str(Path.home() / "Music" / "YT Music"),
+    "download_path": DEFAULT_DOWNLOAD_PATH,
+    "library_scan_extra_paths": list(DEFAULT_LIBRARY_SCAN_EXTRA_PATHS),
     "api_base_url": "http://127.0.0.1:8001",
     "window_size": [1200, 800],
     "window_position": [100, 100],
@@ -65,7 +72,21 @@ class Config:
         path = self.get("download_path", DEFAULT_CONFIG["download_path"])
         os.makedirs(path, exist_ok=True)
         return path
-    
+
+    def get_library_scan_extra_paths(self) -> List[str]:
+        """Absolutne ścieżki poza głównym download_path — skanowane przy imporcie do «All Songs»."""
+        raw = self.config.get("library_scan_extra_paths")
+        if raw is None:
+            raw = DEFAULT_LIBRARY_SCAN_EXTRA_PATHS
+        if not isinstance(raw, list):
+            return list(DEFAULT_LIBRARY_SCAN_EXTRA_PATHS)
+        out: List[str] = []
+        for p in raw:
+            s = str(p).strip()
+            if s:
+                out.append(s)
+        return out
+
     def get_youtube_api_key(self) -> str:
         """Get YouTube API key"""
         return self.get("youtube_api_key", "")

@@ -169,6 +169,7 @@ class DownloadManagerDialog(QDialog):
     """Non-modal download manager that wraps the real DownloadThread."""
 
     download_finished = pyqtSignal(str)   # playlist_name or ""
+    library_updated = pyqtSignal(int)       # songs added by post-download disk sync (0 ok)
 
     def __init__(
         self,
@@ -340,12 +341,6 @@ class DownloadManagerDialog(QDialog):
         self._thread.progress.connect(self._on_progress)
         # song_complete(song_dict, success, file_path, error_msg)
         self._thread.song_complete.connect(self._on_song_complete)
-        try:
-            from app.desktop.utils.auto_playlist import auto_playlist_slot
-
-            self._thread.song_complete.connect(auto_playlist_slot)
-        except ImportError:
-            pass
         # finished(downloaded_paths)
         self._thread.finished.connect(self._on_all_done)
 
@@ -385,6 +380,15 @@ class DownloadManagerDialog(QDialog):
 
         if success and file_path:
             self._downloaded_paths.append(file_path)
+            try:
+                from app.desktop.utils.auto_playlist import (
+                    apply_download_to_master_playlist,
+                )
+
+                added = apply_download_to_master_playlist(song_dict, file_path)
+                self.library_updated.emit(added)
+            except Exception:
+                self.library_updated.emit(0)
 
         self._status_lbl.setText(
             f"{self._done_count} / {self._total} completed")

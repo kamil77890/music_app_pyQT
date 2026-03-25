@@ -224,6 +224,7 @@ class PlaylistsPage(QWidget):
     playlist_play_requested = pyqtSignal(str)
     playlist_random_requested = pyqtSignal(str)
     song_play_requested     = pyqtSignal(str, dict)
+    library_refreshed       = pyqtSignal()
 
     CARD_W   = 210
     CARD_H   = 240
@@ -243,6 +244,7 @@ class PlaylistsPage(QWidget):
         self._scan_thread:   Optional[_PlaylistSongsIndexThread] = None
         self._detail_thread: Optional[_PlaylistDetailThread]     = None
         self._rendering: bool = False
+        self._pending_sidebar_refresh: bool = False
 
         self._resize_timer = QTimer(self)
         self._resize_timer.setSingleShot(True)
@@ -328,6 +330,16 @@ class PlaylistsPage(QWidget):
         songs_sec = QLabel("All Songs (in playlists)")
         songs_sec.setObjectName("section_title")
         songs_hdr_row.addWidget(songs_sec)
+        self._sync_lib_btn = QPushButton("⟳  Sync library")
+        self._sync_lib_btn.setToolTip(
+            "Scan disk and add any new tracks to «All Songs» playlist")
+        self._sync_lib_btn.setFixedHeight(32)
+        self._sync_lib_btn.setStyleSheet(
+            "QPushButton{background:#1e1e38;border:1px solid #2a2a48;"
+            "border-radius:8px;color:#c8c8e0;font-weight:600;padding:0 12px;}"
+            "QPushButton:hover{background:#2a2a48;color:#fff;}")
+        self._sync_lib_btn.clicked.connect(self._on_user_sync_library_clicked)
+        songs_hdr_row.addWidget(self._sync_lib_btn)
         songs_hdr_row.addStretch()
         self._songs_count_lbl = QLabel("")
         self._songs_count_lbl.setObjectName("see_all_link")
@@ -460,11 +472,35 @@ class PlaylistsPage(QWidget):
 
     # ── public API ─────────────────────────────────────────────
 
+    def shutdown_background_threads(self) -> None:
+        """Zatrzymaj wątki skanowania przy zamykaniu okna (unikaj „QThread destroyed”)."""
+        for t in (getattr(self, "_scan_thread", None), getattr(self, "_detail_thread", None)):
+            if t is None:
+                continue
+            try:
+                t.stop()
+            except Exception:
+                pass
+            if t.isRunning():
+                try:
+                    t.wait(4000)
+                except Exception:
+                    pass
+
     def refresh(self):
         """Reload overview."""
         self._back_to_playlists()
         self._load_playlists()
         self._load_all_songs()
+
+    def _on_download_library_updated(self, _added: int) -> None:
+        """Po każdym pobranym utworze — odśwież siatkę bez ponownego pełnego sync."""
+        self._load_all_songs(skip_disk_sync=True)
+        self.library_refreshed.emit()
+
+    def _on_user_sync_library_clicked(self) -> None:
+        self._pending_sidebar_refresh = True
+        self._load_all_songs(skip_disk_sync=False)
 
     def open_playlist(self, folder_path: str):
         """Switch to detail view for a specific playlist folder."""
@@ -577,7 +613,7 @@ class PlaylistsPage(QWidget):
 
     # ── all songs ───────────────────────────────────────────────
 
-    def _load_all_songs(self):
+    def _load_all_songs(self, *, skip_disk_sync: bool = False):
         self._song_grid.clear()
         self._song_cards.clear()
         self._all_song_entries.clear()
@@ -590,20 +626,24 @@ class PlaylistsPage(QWidget):
         if not os.path.isdir(download_path):
             self._songs_loading_lbl.setVisible(False)
             self._empty_songs.setVisible(True)
+            if self._pending_sidebar_refresh:
+                self._pending_sidebar_refresh = False
+                self.library_refreshed.emit()
             return
         try:
             PlaylistManager.ensure_default_playlist(download_path)
         except Exception as exc:
             log.warning("ensure_default_playlist: %s", exc)
 
-        try:
-            from app.desktop.utils.auto_playlist import get_auto_playlist_manager
-            mgr = get_auto_playlist_manager(download_path)
-            n = mgr.sync_from_library(download_path)
-            if n:
-                log.info("Synced %d file(s) into All Songs playlist.json", n)
-        except Exception as exc:
-            log.warning("sync_from_library: %s", exc)
+        if not skip_disk_sync:
+            try:
+                from app.desktop.utils.auto_playlist import get_auto_playlist_manager
+                mgr = get_auto_playlist_manager(download_path)
+                n = mgr.sync_from_library(download_path)
+                if n:
+                    log.info("Synced %d file(s) into All Songs playlist.json", n)
+            except Exception as exc:
+                log.warning("sync_from_library: %s", exc)
 
         if self._scan_thread is not None:
             self._scan_thread.stop()
@@ -618,6 +658,9 @@ class PlaylistsPage(QWidget):
 
     def _on_songs_scanned(self, songs: list):
         self._songs_loading_lbl.setVisible(False)
+        if self._pending_sidebar_refresh:
+            self._pending_sidebar_refresh = False
+            self.library_refreshed.emit()
         if not songs:
             self._empty_songs.setText(
                 'No songs in your playlists yet \u2014 add tracks to a playlist, or download with \u201cCreate playlist\u201d.')
@@ -955,6 +998,7 @@ class PlaylistsPage(QWidget):
                 parent=self,
             )
             dlg.download_finished.connect(lambda _: None)
+            dlg.library_updated.connect(self._on_download_library_updated)
             dlg.show()
 
         if local_only:

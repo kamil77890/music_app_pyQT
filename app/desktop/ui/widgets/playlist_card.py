@@ -1,6 +1,7 @@
 # playlist_card.py
 import os
 import json
+import logging
 from typing import Optional
 from PyQt5.QtWidgets import (
     QFrame, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QSizePolicy,
@@ -13,6 +14,8 @@ from PyQt5.QtCore import Qt, QPropertyAnimation, QEasingCurve, pyqtProperty, pyq
 
 from app.desktop.threads.thumbnail_loader import ThumbnailLoader
 from app.desktop.utils.metadata import get_audio_metadata
+
+log = logging.getLogger(__name__)
 
 
 class PlaylistCard(QFrame):
@@ -226,10 +229,8 @@ class PlaylistCard(QFrame):
     
     def load_playlist_info(self):
         """Load playlist information from JSON"""
-        print(f"[DEBUG] Loading playlist info for: {self.folder_path}")
-        
         if not os.path.exists(self.folder_path):
-            print(f"[DEBUG] Playlist folder does not exist: {self.folder_path}")
+            log.debug("Playlist folder missing: %s", self.folder_path)
             self.set_placeholder_covers()
             return
         
@@ -258,7 +259,7 @@ class PlaylistCard(QFrame):
                 return
                 
             except Exception as e:
-                print(f"[ERROR] Error reading playlist JSON: {e}")
+                log.warning("playlist.json read error %s: %s", self.folder_path, e)
         
         # Fallback: scan folder for audio files
         self.load_playlist_covers_legacy()
@@ -276,8 +277,8 @@ class PlaylistCard(QFrame):
                     if file.lower().endswith(('.mp3', '.mp4', '.m4a', '.flac', '.wav', '.ogg')):
                         audio_files.append(os.path.join(root, file))
             
-            print(f"[DEBUG] Found {len(audio_files)} audio files in playlist")
-            
+            log.debug("Legacy scan %s: %d audio file(s)", self.folder_path, len(audio_files))
+
             song_count = len(audio_files)
             self.count_label.setText(f"{song_count} song{'s' if song_count != 1 else ''}")
             
@@ -295,7 +296,7 @@ class PlaylistCard(QFrame):
                 self.set_single_placeholder(i)
             
         except Exception as e:
-            print(f"[ERROR] Error loading playlist covers: {e}")
+            log.warning("Playlist covers legacy %s: %s", self.folder_path, e)
             self.set_placeholder_covers()
     
     def load_song_cover(self, index, song_data):
@@ -323,7 +324,7 @@ class PlaylistCard(QFrame):
                     self.cover_labels[index].setPixmap(tile)
                     return
             except Exception as e:
-                print(f"[DEBUG] Error loading cover from metadata: {e}")
+                log.debug("Cover from metadata: %s", e)
         
         # Fallback to color based on index
         colors = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4']
@@ -353,7 +354,7 @@ class PlaylistCard(QFrame):
                 self.cover_labels[index].setPixmap(tile)
                 return
         except Exception as e:
-            print(f"[DEBUG] Error loading cover from file: {e}")
+            log.debug("Cover from file: %s", e)
         
         # Fallback to color based on index
         colors = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4']
