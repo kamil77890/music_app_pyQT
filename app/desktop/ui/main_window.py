@@ -414,9 +414,6 @@ class DesktopApp(QMainWindow):
             return
         self._global_hotkeys_stop = start_global_hotkeys(
             on_play_pause=self._audio.toggle_play,
-            on_next=self._audio.next_song,
-            on_previous=self._audio.previous_song,
-            on_mute=self._on_bottom_mute_toggle,
         )
 
     def changeEvent(self, event):
