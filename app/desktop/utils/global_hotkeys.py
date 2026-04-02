@@ -20,9 +20,6 @@ log = logging.getLogger(__name__)
 def start_global_hotkeys(
     *,
     on_play_pause: Callable[[], None],
-    on_next: Callable[[], None],
-    on_previous: Callable[[], None],
-    on_mute: Callable[[], None],
 ) -> Callable[[], None]:
     """
     Uruchamia nasłuch w tle. Zwraca funkcję stop() do wywołania przy zamykaniu aplikacji.
@@ -46,9 +43,6 @@ def start_global_hotkeys(
     # Pojedyncze klawisze — patrz docstring (parsowanie: GlobalHotKeys akceptuje m.in. ".", "*", "<left>", "<right>").
     mapping = {
         "*": lambda: _main(on_play_pause),
-        ".": lambda: _main(on_mute),
-        "<right>": lambda: _main(on_next),
-        "<left>": lambda: _main(on_previous),
     }
 
     try:
