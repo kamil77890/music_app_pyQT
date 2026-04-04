@@ -1,7 +1,6 @@
-from fastapi import APIRouter, Request
+from fastapi import APIRouter
 from pydantic import BaseModel
 from app.logic.handle_like import handle_like
-from app.authorization import login_decorator
 
 
 class LikeRequest(BaseModel):
@@ -12,8 +11,7 @@ class LikeRequest(BaseModel):
 router = APIRouter(tags=["like"])
 
 
-@login_decorator
 @router.post("/api/like")
-async def like_song(request: Request, req: LikeRequest):
+async def like_song(req: LikeRequest):
     handle_like(video_id=req.id, liked=req.liked)
     return {"message": f"Song {req.id} liked: {req.liked}"}

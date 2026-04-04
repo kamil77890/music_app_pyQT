@@ -70,11 +70,19 @@ class AutoPlaylistManager:
         _EXTS = _AUDIO_EXTS
         data = PlaylistManager.get_playlist_info(self._folder)
         initial_json_tracks = len(data.get("songs", []))
-        existing = {
-            os.path.normcase(os.path.abspath(s.get("file_path", "")))
-            for s in data.get("songs", [])
-            if s.get("file_path")
-        }
+        existing = set()
+        existing_video_ids = set()
+        for s in data.get("songs", []):
+            fp = s.get("file_path") or s.get("path", "")
+            if fp:
+                try:
+                    existing.add(os.path.normcase(os.path.abspath(fp)))
+                except OSError:
+                    pass
+            # Also track videoIds to avoid duplicates
+            vid = s.get("videoId", "").strip()
+            if vid:
+                existing_video_ids.add(vid)
         added = 0
         disk_mp3 = 0
         disk_audio = 0
@@ -96,10 +104,22 @@ class AutoPlaylistManager:
                 return
             if k in existing:
                 return
+            
+            # Check videoId before adding
             try:
                 meta = get_audio_metadata(fp)
+                vid = meta.get("videoId", "").strip() if meta else ""
+                if vid and vid in existing_video_ids:
+                    log.debug("  - skip duplicate videoId %s: %s", vid, fp)
+                    return
+            except Exception as exc:
+                log.debug("meta read error %s: %s", fp, exc)
+            
+            try:
                 if PlaylistManager.add_song_to_playlist(self._folder, fp, meta):
                     existing.add(k)
+                    if vid:
+                        existing_video_ids.add(vid)
                     added += 1
                     log.debug("  + added to «All Songs»: %s", fp)
             except Exception as exc:
@@ -155,11 +175,19 @@ class AutoPlaylistManager:
 
         # Drugi krok: plik jest na dysku, ale nie ma go w JSON (np. zablokowany duplikatem tytuł+artysta).
         data_now = PlaylistManager.get_playlist_info(self._folder)
-        json_norms: Set[str] = {
-            os.path.normcase(os.path.abspath(s.get("file_path", "")))
-            for s in data_now.get("songs", [])
-            if s.get("file_path")
-        }
+        json_norms: Set[str] = set()
+        json_video_ids: Set[str] = set()
+        for s in data_now.get("songs", []):
+            fp = s.get("file_path") or s.get("path", "")
+            if fp:
+                try:
+                    json_norms.add(os.path.normcase(os.path.abspath(fp)))
+                except OSError:
+                    pass
+            vid = s.get("videoId", "").strip()
+            if vid:
+                json_video_ids.add(vid)
+        
         missing_norms: List[Tuple[str, str]] = [
             (nk, disk_audio_norm_to_fp[nk])
             for nk in disk_audio_norm_to_fp
@@ -177,8 +205,16 @@ class AutoPlaylistManager:
         reconcile = 0
         for _nk, fp in missing_norms:
             try:
+                # Check videoId before reconciling
+                from app.desktop.utils.metadata import get_audio_metadata
+                meta = get_audio_metadata(fp)
+                vid = meta.get("videoId", "").strip() if meta else ""
+                if vid and vid in json_video_ids:
+                    log.debug("  - skip reconcile duplicate videoId %s: %s", vid, fp)
+                    continue
+                
                 if PlaylistManager.add_song_to_playlist(
-                    self._folder, fp, dedupe_paths_only=True
+                    self._folder, fp, meta, dedupe_paths_only=True
                 ):
                     reconcile += 1
                     added += 1
@@ -186,6 +222,8 @@ class AutoPlaylistManager:
                         existing.add(os.path.normcase(os.path.abspath(fp)))
                     except OSError:
                         pass
+                    if vid:
+                        json_video_ids.add(vid)
             except Exception as exc:
                 log.debug("reconcile skip %s: %s", fp, exc)
         if reconcile:

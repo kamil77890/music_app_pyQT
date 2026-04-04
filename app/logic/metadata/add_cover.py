@@ -9,7 +9,6 @@ from typing import Optional
 import os
 import requests
 
-# USUNIĘTO: import imghdr
 
 def get_image_type(image_bytes: bytes) -> Optional[str]:
     """

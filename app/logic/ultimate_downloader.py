@@ -8,12 +8,12 @@ from urllib.parse import urlparse, parse_qs
 from fastapi import HTTPException
 
 from app.config.stałe import Parameters
-from app.logic.metadata.add_metadata import add_metadata
 from app.logic.subtitles.handle_subtitles import embed_sylt, parse_srt_to_sync, convert_srt_to_txt
 from app.logic.downloader.filename import sanitize_filename
 from app.logic.downloader.retries import safe_get_song_by_string
 from app.logic.downloader.cleanup import cleanup_temp_files
 from app.logic.downloader.yt_dlp_client import download_song_mp3
+from app.logic.api_handler.handle_yt import get_video_by_id
 
 
 def _download_dir() -> str:
@@ -68,21 +68,19 @@ def extract_video_id(video_input: str) -> str:
 
 def fetch_video_title(video_id: str) -> str:
     try:
-        song_data = run_async(safe_get_song_by_string(video_id))
-        
-        if isinstance(song_data, list) and len(song_data) > 0:
-            first_item = song_data[0]
-            
-            if hasattr(first_item, 'snippet'):
-                return first_item.snippet.title
-            elif isinstance(first_item, dict) and 'snippet' in first_item:
-                return first_item['snippet'].get('title', video_id)
-            else:
-                return video_id
-        
-        elif isinstance(song_data, dict):
-            return song_data.get('title', video_id)
-        
+        song = run_async(get_video_by_id(video_id))
+
+        if song:
+            if hasattr(song, 'snippet'):
+                snippet = song.snippet
+                if hasattr(snippet, 'title'):
+                    return snippet.title
+                elif hasattr(snippet, '__getitem__') and 'title' in snippet:
+                    return snippet['title']
+            elif isinstance(song, dict):
+                snippet = song.get('snippet', {})
+                return snippet.get('title', video_id)
+
         return video_id
     
     except Exception as e:
@@ -113,10 +111,8 @@ def find_downloaded_file(base_path: str, video_id: str, expected_path: str, form
 
 
 def process_metadata(file_path: str, format_ext: str, video_id: str):
-    try:
-        add_metadata(file_path, format_ext, video_id)
-    except Exception as e:
-        print(f"Warning: Failed to add metadata: {e}")
+    # Metadata is now embedded in the song file directly
+    pass
 
 
 def process_subtitles(file_path: str, srt_path: str):

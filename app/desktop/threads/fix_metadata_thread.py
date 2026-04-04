@@ -44,7 +44,7 @@ class FixMetadataThread(QThread):
             if self._stop:
                 break
 
-            file_path    = song_data.get("file_path")
+            file_path    = song_data.get("file_path") or song_data.get("path", "")
             fetch_covers = song_data.get("fetch_covers", True)
             overwrite    = song_data.get("overwrite", False)
 

@@ -2,7 +2,6 @@ import os
 from time import sleep
 from yt_dlp import YoutubeDL
 from app.config.stałe import Parameters
-from app.logic.metadata.add_metadata import add_metadata
 
 download_dir = Parameters.get_download_dir()
 
@@ -33,7 +32,7 @@ def download_song_core(videoId: str, id: str, format: str = "mp3") -> dict:
             ydl.download([url])
 
         sleep(2.5)
-        add_metadata(output_file, format, videoId)
+        # Metadata is now embedded in the song file directly
         sleep(1)
 
         if os.path.exists(output_file):

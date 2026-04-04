@@ -108,7 +108,8 @@ class SongCard(QFrame):
             self._apply_thumbnail_scale()
 
     def load_thumbnail(self):
-        b64 = get_field(self.entry,"cover_base64","")
+        # Try cover from JSON (base64 encoded WebP/JPEG from song metadata)
+        b64 = get_field(self.entry, "cover", "")
         if b64:
             try:
                 import base64
@@ -119,10 +120,29 @@ class SongCard(QFrame):
                 if not px.isNull():
                     self.set_thumbnail(px)
                     return
-            except Exception: pass
-        raw = get_field(self.entry,"cover","") or get_field(self.entry,"thumbnail","") or get_field(self.entry,"high_res_thumbnail","")
+            except Exception:
+                pass
+        
+        # Fallback to old cover_base64 field
+        b64 = get_field(self.entry, "cover_base64", "")
+        if b64:
+            try:
+                import base64
+                data = base64.b64decode(b64)
+                img = QImage()
+                img.loadFromData(data)
+                px = QPixmap.fromImage(img)
+                if not px.isNull():
+                    self.set_thumbnail(px)
+                    return
+            except Exception:
+                pass
+        
+        # Fallback to YouTube URLs
+        raw = get_field(self.entry, "thumbnail", "") or get_field(self.entry, "high_res_thumbnail", "")
         if not raw:
-            self.set_placeholder(); return
+            self.set_placeholder()
+            return
         self.cleanup_thumbnail_loader()
         self.thumbnail_loader = ThumbnailLoader(_upgrade_yt_url(raw))
         self.thumbnail_loader.loaded.connect(self.set_thumbnail)

@@ -54,10 +54,22 @@ _MIN_CENTER_W = 180
 def _cover_pixmap_for_track(
     file_path: str, is_url: bool, metadata: dict,
 ) -> Optional[QPixmap]:
-    """Embedded art from file, else optional base64 from metadata dict."""
+    """Embedded art from file, else cover from metadata dict (base64)."""
     cover_px: Optional[QPixmap] = None
     if not is_url and file_path and os.path.isfile(file_path):
         cover_px = load_cover_pixmap_from_file(file_path)
+    
+    # Try new 'cover' field first (compressed WebP/JPEG)
+    if cover_px is None and metadata.get("cover"):
+        try:
+            raw = base64.b64decode(metadata["cover"])
+            pm = QPixmap()
+            if pm.loadFromData(raw) and not pm.isNull():
+                cover_px = pm
+        except Exception:
+            pass
+    
+    # Fallback to old cover_base64 field
     if cover_px is None and metadata.get("cover_base64"):
         try:
             raw = base64.b64decode(metadata["cover_base64"])
@@ -66,6 +78,7 @@ def _cover_pixmap_for_track(
                 cover_px = pm
         except Exception:
             pass
+    
     return cover_px
 
 
@@ -395,17 +408,8 @@ class DesktopApp(QMainWindow):
             s.setContext(ctx)
             s.activated.connect(slot)
 
-        _sc("Space", self._audio.toggle_play)
-        _sc("Ctrl+Right", self._audio.next_song)
-        _sc("Ctrl+Left", self._audio.previous_song)
-        _sc("Ctrl+F", self._focus_search)
-        _sc("Ctrl+1", lambda: self._switch_page("discover"))
-        _sc("Ctrl+2", lambda: self._switch_page("playlists"))
-        # * w oknie: play/pause (jak globalnie); wyciszenie: Ctrl+M
-        _sc("Shift+8", self._audio.toggle_play)
-        _sc(Qt.Key_Asterisk, self._audio.toggle_play)
-        _sc("Ctrl+M", self._on_bottom_mute_toggle)
-        # Skróty „. / ← / →” (mute / prev / next) tylko w global_hotkeys (pynput).
+        _sc(Qt.Key_Asterisk, self._audio.stop_playback)
+        _sc("|", self._audio.next_song)
 
     def _setup_global_hotkeys(self) -> None:
         try:
@@ -414,6 +418,9 @@ class DesktopApp(QMainWindow):
             return
         self._global_hotkeys_stop = start_global_hotkeys(
             on_play_pause=self._audio.toggle_play,
+            on_prev=self._audio.previous_song,
+            on_next=self._audio.next_song,
+            on_mute=self._on_bottom_mute_toggle,
         )
 
     def changeEvent(self, event):
@@ -1073,7 +1080,7 @@ class DesktopApp(QMainWindow):
         existing = {_norm_path_key(fp) for fp, _ in self._audio.playlist}
         candidates = []
         for s in data.get("songs", []):
-            fp = s.get("file_path", "")
+            fp = s.get("file_path", "") or s.get("path", "")
             if not fp or not os.path.isfile(fp):
                 continue
             nk = _norm_path_key(fp)

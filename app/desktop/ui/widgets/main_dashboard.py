@@ -110,7 +110,7 @@ def _coerce_album_row(a) -> dict:
 
 
 def _youtube_url_if_no_file(d: dict) -> str:
-    fp = (d.get("file_path") or d.get("url") or "").strip()
+    fp = (d.get("file_path") or d.get("path") or d.get("url") or "").strip()
     if fp:
         return fp
     vid = d.get("videoId") or d.get("video_id") or d.get("id")

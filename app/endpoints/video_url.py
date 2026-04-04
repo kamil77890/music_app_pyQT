@@ -1,7 +1,6 @@
 import re
-from fastapi import APIRouter, Request, Query
+from fastapi import APIRouter, Query
 from fastapi.responses import JSONResponse
-from app.authorization import login_decorator
 from app.logic.fetch_video import fetch_info
 
 router = APIRouter(tags=["video"])
@@ -9,9 +8,8 @@ router = APIRouter(tags=["video"])
 VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
 
 
-@login_decorator
 @router.get("/video-url")
-async def video_url(request: Request, videoId: str = Query(..., min_length=11, max_length=11)):
+async def video_url(videoId: str = Query(..., min_length=11, max_length=11)):
     if not VIDEO_ID_RE.fullmatch(videoId):
         return JSONResponse(
             {"error": "Nieprawidłowy videoId: oczekiwane 11 znaków [A-Za-z0-9_-]"},

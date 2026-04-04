@@ -40,7 +40,7 @@ def _paths_from_playlist_jsons(base_path: str) -> list:
     try:
         for pl in PlaylistManager.get_all_playlists(base_path):
             for s in pl.get("songs", []):
-                fp = s.get("file_path")
+                fp = s.get("file_path") or s.get("path", "")
                 if fp and os.path.isfile(fp):
                     out.append(fp)
     except Exception as exc:
@@ -120,33 +120,41 @@ class _PlaylistDetailThread(QThread):
         if self._stop:
             return
         try:
-            from app.desktop.utils.metadata import get_audio_metadata
+            from app.logic.metadata.add_metadata import extract_cover_from_metadata
 
             data = PlaylistManager.get_playlist_info(self._folder)
             entries = []
             for song in data.get("songs", []):
                 if self._stop:
                     return
-                fp = song.get("file_path", "")
+                fp = song.get("file_path", "") or song.get("path", "")
                 if not fp or not os.path.isfile(fp):
                     continue
-                try:
-                    meta = get_audio_metadata(fp, include_cover_data=True)
-                    if not isinstance(meta, dict):
-                        meta = {}
-                    vid = song.get("video_id") or song.get("youtube_id") or ""
-                    entry = {
-                        "title":        meta.get("title") or
-                                        os.path.splitext(os.path.basename(fp))[0],
-                        "artist":       meta.get("artist", ""),
-                        "duration":     meta.get("duration", 0),
-                        "cover_base64": meta.get("cover_base64", ""),
-                        "file_path":    fp,
-                        "video_id":     vid,
-                    }
-                    entries.append((fp, entry))
-                except Exception as exc:
-                    log.warning("Detail meta error %s: %s", os.path.basename(fp), exc)
+                
+                # Use metadata already stored in playlist JSON
+                title = song.get("title", os.path.splitext(os.path.basename(fp))[0])
+                artist = song.get("artist", "Unknown Artist")
+                duration = song.get("duration", 0)
+                video_id = song.get("videoId", "") or song.get("video_id", "") or song.get("youtube_id", "")
+                
+                # Get cover from JSON if available, otherwise extract from file
+                cover = song.get("cover", "")
+                if not cover and os.path.exists(fp):
+                    try:
+                        ext = os.path.splitext(fp)[1].lstrip(".").lower()
+                        cover = extract_cover_from_metadata(fp, ext)
+                    except Exception:
+                        pass
+
+                entry = {
+                    "title":        title,
+                    "artist":       artist,
+                    "duration":     duration,
+                    "cover":        cover,
+                    "file_path":    fp,
+                    "video_id":     video_id,
+                }
+                entries.append((fp, entry))
 
             # Sort by artist (case-insensitive), Unknown Artist last
             def _artist_key(item):
@@ -304,6 +312,28 @@ class PlaylistsPage(QWidget):
         new_btn.setProperty("style", "primary")
         new_btn.clicked.connect(self._create_playlist)
         hdr.addWidget(new_btn)
+
+        self._recompress_covers_btn = QPushButton("🖼️ Fix Covers")
+        self._recompress_covers_btn.setFixedHeight(36)
+        self._recompress_covers_btn.setStyleSheet(
+            "QPushButton{background:#1DB954;border:none;border-radius:8px;"
+            "color:#fff;font-weight:600;padding:0 14px;font-size:13px;}"
+            "QPushButton:hover{background:#1ED760;}")
+        self._recompress_covers_btn.setToolTip(
+            "Recompress all cover images to 256x256 WebP to reduce JSON size")
+        self._recompress_covers_btn.clicked.connect(self._recompress_covers)
+        hdr.addWidget(self._recompress_covers_btn)
+
+        self._reset_json_btn = QPushButton("⟳  Reset All Songs JSON")
+        self._reset_json_btn.setFixedHeight(36)
+        self._reset_json_btn.setStyleSheet(
+            "QPushButton{background:#e03131;border:none;border-radius:8px;"
+            "color:#fff;font-weight:600;padding:0 14px;font-size:13px;}"
+            "QPushButton:hover{background:#c02a2a;}")
+        self._reset_json_btn.setToolTip(
+            "Delete and recreate the All Songs playlist.json from scratch")
+        self._reset_json_btn.clicked.connect(self._reset_playlist_json)
+        hdr.addWidget(self._reset_json_btn)
         blay.addLayout(hdr)
 
         self._count_lbl = QLabel("")
@@ -671,30 +701,38 @@ class PlaylistsPage(QWidget):
         self._process_songs(songs)
 
     def _process_songs(self, songs: list):
-        try:
-            from app.desktop.utils.metadata import get_audio_metadata
-        except ImportError:
-            get_audio_metadata = None
-
         entries = []
-        for fp, _ in songs:
+        for fp, song_data in songs:
             try:
-                meta = get_audio_metadata(fp, include_cover_data=True) if get_audio_metadata else {}
-                if not isinstance(meta, dict):
-                    meta = {}
+                # Try to get cover from JSON first (already compressed)
+                cover = song_data.get("cover", "") if isinstance(song_data, dict) else ""
+                
+                # If no cover in JSON, extract from file
+                if not cover and os.path.exists(fp):
+                    try:
+                        from app.logic.metadata.add_metadata import extract_cover_from_metadata
+                        ext = os.path.splitext(fp)[1].lstrip(".").lower()
+                        cover = extract_cover_from_metadata(fp, ext)
+                    except Exception:
+                        pass
+
                 entry = {
-                    "title":        meta.get("title") or os.path.splitext(os.path.basename(fp))[0],
-                    "artist":       meta.get("artist", ""),
-                    "duration":     meta.get("duration", 0),
-                    "cover_base64": meta.get("cover_base64", ""),
+                    "title":        song_data.get("title", os.path.splitext(os.path.basename(fp))[0]) if isinstance(song_data, dict) else os.path.splitext(os.path.basename(fp))[0],
+                    "artist":       song_data.get("artist", "") if isinstance(song_data, dict) else "",
+                    "duration":     song_data.get("duration", 0) if isinstance(song_data, dict) else 0,
+                    "cover":        cover,
                     "file_path":    fp,
                 }
-                for vk in ("video_id", "youtube_id"):
-                    if meta.get(vk):
-                        entry[vk] = meta[vk]
+                
+                # Preserve video_id if present
+                if isinstance(song_data, dict):
+                    for vk in ("video_id", "youtube_id", "videoId"):
+                        if song_data.get(vk):
+                            entry[vk] = song_data[vk]
+                            
                 entries.append((fp, entry))
             except Exception as exc:
-                log.warning("Metadata read error for %s: %s", os.path.basename(fp), exc)
+                log.warning("Metadata processing error for %s: %s", os.path.basename(fp), exc)
 
         self._all_song_entries = entries
         self._render_song_cards(entries)
@@ -1038,6 +1076,143 @@ class PlaylistsPage(QWidget):
                 QTimer.singleShot(200, self.refresh)
         except Exception as exc:
             log.error("Playlist creation error: %s", exc)
+
+    def _reset_playlist_json(self):
+        """Delete and recreate the 'All Songs' playlist.json from scratch."""
+        base = config.get_download_path()
+        folder = PlaylistManager.default_playlist_folder_path(base)
+        json_path = os.path.join(folder, "playlist.json")
+
+        if not os.path.isfile(json_path):
+            QMessageBox.information(
+                self, "No playlist.json",
+                "The 'All Songs' playlist.json does not exist yet. "
+                "It will be created automatically when you download or add a song.")
+            return
+
+        reply = QMessageBox.warning(
+            self,
+            "Reset All Songs JSON",
+            "This will delete the current 'All Songs' playlist.json and rebuild it "
+            "by scanning all audio files.\n\nContinue?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+
+        if reply == QMessageBox.Yes:
+            try:
+                os.remove(json_path)
+                log.info("Deleted playlist.json: %s", json_path)
+            except OSError as exc:
+                QMessageBox.critical(
+                    self, "Error", f"Could not delete playlist.json:\n{exc}")
+                return
+
+            from app.desktop.utils.auto_playlist import AutoPlaylistManager
+            mgr = AutoPlaylistManager(base)
+            n_synced = mgr.sync_from_library(base)
+            log.info("Rebuilt playlist.json with %d song(s)", n_synced)
+            QMessageBox.information(
+                self, "Done",
+                f"'All Songs' playlist.json has been rebuilt with {n_synced} song(s).",
+            )
+            QTimer.singleShot(300, self.refresh)
+
+    def _recompress_covers(self):
+        """Recompress all cover images in All Songs playlist to reduce JSON size."""
+        base = config.get_download_path()
+        folder = PlaylistManager.default_playlist_folder_path(base)
+
+        if not os.path.isdir(folder):
+            QMessageBox.information(
+                self, "No Playlist",
+                "The 'All Songs' playlist does not exist yet.")
+            return
+
+        reply = QMessageBox.question(
+            self,
+            "Fix Cover Images",
+            "This will recompress all cover images embedded in audio files to "
+            "256x256 WebP format to reduce JSON file size.\n\nContinue?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes,
+        )
+
+        if reply == QMessageBox.Yes:
+            from PyQt5.QtWidgets import QProgressDialog
+            from PyQt5.QtCore import QTimer
+
+            def run_recompress():
+                try:
+                    result = PlaylistManager.recompress_all_covers(folder)
+
+                    QMessageBox.information(
+                        self,
+                        "Cover Fix Complete",
+                        f"Updated: {result['updated']} covers\n"
+                        f"Errors: {result['errors']}\n\n"
+                        f"JSON file has been updated with compressed covers.",
+                    )
+                    QTimer.singleShot(300, self.refresh)
+                except Exception as exc:
+                    log.error("Cover recompression error: %s", exc)
+                    QMessageBox.critical(
+                        self, "Error", f"Failed to recompress covers:\n{exc}")
+
+            # Run in background
+            from PyQt5.QtCore import QThread, pyqtSignal
+
+            class RecompressThread(QThread):
+                finished_signal = pyqtSignal(dict)
+                error_signal = pyqtSignal(str)
+
+                def run(self):
+                    try:
+                        result = PlaylistManager.recompress_all_covers(folder)
+                        self.finished_signal.emit(result)
+                    except Exception as e:
+                        self.error_signal.emit(str(e))
+
+            self._recompress_thread = RecompressThread()
+            self._recompress_progress = QProgressDialog(
+                "Recompressing covers...", "Cancel", 0, 0, self
+            )
+            self._recompress_progress.setWindowTitle("Fix Covers")
+            self._recompress_progress.setWindowModality(Qt.WindowModal)
+            self._recompress_progress.show()
+
+            self._recompress_thread.finished_signal.connect(
+                lambda result: self._on_recompress_done(result)
+            )
+            self._recompress_thread.error_signal.connect(
+                lambda err: self._on_recompress_error(err)
+            )
+            self._recompress_thread.start()
+
+    def _on_recompress_done(self, result):
+        """Handle recompression completion"""
+        if hasattr(self, '_recompress_progress'):
+            self._recompress_progress.close()
+
+        QMessageBox.information(
+            self,
+            "Cover Fix Complete",
+            f"Updated: {result['updated']} covers\n"
+            f"Errors: {result['errors']}\n\n"
+            f"JSON file has been updated with compressed WebP covers.",
+        )
+        QTimer.singleShot(300, self.refresh)
+
+    def _on_recompress_error(self, error_msg):
+        """Handle recompression error"""
+        if hasattr(self, '_recompress_progress'):
+            self._recompress_progress.close()
+
+        QMessageBox.critical(
+            self, "Error", f"Failed to recompress covers:\n{error_msg}"
+        )
+
+    # ── helpers ────────────────────────────────────────────────
 
     def _delete_playlist(self, folder_path: str):
         base = config.get_download_path()

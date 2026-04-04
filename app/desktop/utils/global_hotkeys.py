@@ -2,12 +2,9 @@
 Globalne skróty (działają gdy okno nie ma fokusu / jest ukryte).
 Wymaga pakietu pynput.
 
-Domyślnie (działają w całym systemie — uważaj przy pisaniu w innych aplikacjach):
-  *           play/pause
-  .           wycisz / przywróć głośność
-  ← / →       poprzedni / następny utwór
-
-Uwaga: w pynput nie używaj słowa „space” — poprawny zapis to <space> (stare Ctrl+Shift+Space było źle parsowane).
+Domyślnie (działają w całym systemie):
+  *           stop
+  |           następny utwór
 """
 from __future__ import annotations
 
@@ -20,6 +17,9 @@ log = logging.getLogger(__name__)
 def start_global_hotkeys(
     *,
     on_play_pause: Callable[[], None],
+    on_prev: Callable[[], None] = None,
+    on_next: Callable[[], None] = None,
+    on_mute: Callable[[], None] = None,
 ) -> Callable[[], None]:
     """
     Uruchamia nasłuch w tle. Zwraca funkcję stop() do wywołania przy zamykaniu aplikacji.
@@ -40,9 +40,10 @@ def start_global_hotkeys(
     def _main(fn: Callable[[], None]) -> None:
         QTimer.singleShot(0, fn)
 
-    # Pojedyncze klawisze — patrz docstring (parsowanie: GlobalHotKeys akceptuje m.in. ".", "*", "<left>", "<right>").
+    # Pojedyncze klawisze — tylko * (stop) i | (next)
     mapping = {
         "*": lambda: _main(on_play_pause),
+        "|": lambda: _main(on_next),
     }
 
     try:
@@ -58,7 +59,5 @@ def start_global_hotkeys(
         except Exception:
             pass
 
-    log.info(
-        "Global hotkeys: * play/pause, . mute, ←/→ prev/next"
-    )
+    log.info("Global hotkeys: * stop, | next")
     return stop

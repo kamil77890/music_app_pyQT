@@ -300,62 +300,52 @@ class PlaylistCard(QFrame):
             self.set_placeholder_covers()
     
     def load_song_cover(self, index, song_data):
-        """Load cover for a song from JSON data"""
-        file_path = song_data.get("file_path")
+        """Load cover for a song from JSON data (base64 encoded WebP/JPEG)"""
+        cover_base64 = song_data.get("cover", "")
         
-        if file_path and os.path.exists(file_path):
+        if cover_base64:
             try:
-                metadata = get_audio_metadata(file_path)
-                if metadata.get("has_cover") and metadata.get("cover_base64"):
-                    import base64
-                    from PyQt5.QtGui import QImage, QPixmap
-                    
-                    # Decode base64 image
-                    image_data = base64.b64decode(metadata["cover_base64"])
-                    
-                    # Create QImage from data
-                    image = QImage()
-                    image.loadFromData(image_data)
-                    
-                    # Create pixmap
-                    pixmap = QPixmap.fromImage(image)
-                    
+                import base64
+                from PyQt5.QtGui import QPixmap
+                
+                image_data = base64.b64decode(cover_base64)
+                pixmap = QPixmap()
+                pixmap.loadFromData(image_data)
+                
+                if not pixmap.isNull():
                     tile = self._square_tile(pixmap, self.COVER_TILE)
                     self.cover_labels[index].setPixmap(tile)
                     return
             except Exception as e:
-                log.debug("Cover from metadata: %s", e)
-        
+                log.debug("Cover from base64: %s", e)
+
         # Fallback to color based on index
         colors = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4']
         color = colors[index % len(colors)]
         self.set_single_placeholder(index, color)
     
     def load_song_cover_legacy(self, index, file_path):
-        """Legacy method to load cover from file"""
+        """Load cover directly from metadata embedded in file (base64)"""
         try:
-            metadata = get_audio_metadata(file_path)
+            from app.logic.metadata.add_metadata import extract_cover_from_metadata
+            ext = os.path.splitext(file_path)[1].lstrip(".").lower()
+            cover_base64 = extract_cover_from_metadata(file_path, ext)
             
-            if metadata.get("has_cover") and metadata.get("cover_base64"):
+            if cover_base64:
                 import base64
-                from PyQt5.QtGui import QImage, QPixmap
+                from PyQt5.QtGui import QPixmap
                 
-                # Decode base64 image
-                image_data = base64.b64decode(metadata["cover_base64"])
+                image_data = base64.b64decode(cover_base64)
+                pixmap = QPixmap()
+                pixmap.loadFromData(image_data)
                 
-                # Create QImage from data
-                image = QImage()
-                image.loadFromData(image_data)
-                
-                # Create pixmap
-                pixmap = QPixmap.fromImage(image)
-                
-                tile = self._square_tile(pixmap, self.COVER_TILE)
-                self.cover_labels[index].setPixmap(tile)
-                return
+                if not pixmap.isNull():
+                    tile = self._square_tile(pixmap, self.COVER_TILE)
+                    self.cover_labels[index].setPixmap(tile)
+                    return
         except Exception as e:
             log.debug("Cover from file: %s", e)
-        
+
         # Fallback to color based on index
         colors = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4']
         color = colors[index % len(colors)]

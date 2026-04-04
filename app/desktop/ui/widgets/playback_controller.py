@@ -340,7 +340,7 @@ class PlaybackController(QFrame):
         return [row._track for row in self._browse_rows if row.is_selected()]
 
     def _on_browse_track(self, track: dict):
-        file_path = (track.get("file_path", "") or track.get("url", "")).strip()
+        file_path = (track.get("file_path", "") or track.get("path", "") or track.get("url", "")).strip()
         if not file_path:
             vid = track.get("video_id") or track.get("videoId") or track.get("id")
             if isinstance(vid, dict):

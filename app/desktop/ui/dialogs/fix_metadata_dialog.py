@@ -60,7 +60,7 @@ class FixMetadataDialog(QDialog):
 
         # Update the song list item creation in FixMetadataDialog.setup_ui()
         for sd in self.songs_data:
-            fp = sd.get("file_path")
+            fp = sd.get("file_path") or sd.get("path", "")
             md = sd.get("metadata", {})
             title_txt = md.get("title") or os.path.basename(fp)
             artist_txt = md.get("artist") or "Unknown Artist"
@@ -162,7 +162,7 @@ class FixMetadataDialog(QDialog):
         for it in items:
             sd = it.data(Qt.UserRole)
             to_fix.append({
-                "file_path": sd.get("file_path"),
+                "file_path": sd.get("file_path") or sd.get("path", ""),
                 "metadata": sd.get("metadata"),
                 "fetch_covers": self.fetch_covers.isChecked(),
                 "overwrite": self.overwrite.isChecked()

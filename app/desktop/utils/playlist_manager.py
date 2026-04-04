@@ -178,7 +178,7 @@ class PlaylistManager:
         """
         try:
             playlist_data = PlaylistManager.get_playlist_info(folder_path)
-            
+
             # Get or create metadata
             if metadata is None:
                 if os.path.exists(file_path):
@@ -187,39 +187,46 @@ class PlaylistManager:
                     metadata = {
                         "title": os.path.splitext(os.path.basename(file_path))[0],
                         "artist": "Unknown Artist",
-                        "album": "Unknown Album",
                         "duration": 0,
-                        "has_cover": False,
-                        "needs_fix": True
+                        "videoId": "",
                     }
-            
-            # Create song entry
+
+            name = os.path.splitext(os.path.basename(file_path))[0]
+            playable_uri = os.path.abspath(file_path)
+
+            # Get cover as base64 directly from song metadata
+            cover = ""
+            if os.path.exists(file_path) and metadata.get("has_cover"):
+                from app.logic.metadata.add_metadata import extract_cover_from_metadata
+                ext = os.path.splitext(file_path)[1].lstrip(".").lower()
+                cover = extract_cover_from_metadata(file_path, ext)
+
             song_entry = {
-                "file_path": file_path,
-                "title": metadata.get("title", os.path.splitext(os.path.basename(file_path))[0]),
+                "videoId": metadata.get("videoId", ""),
+                "title": metadata.get("title", name),
                 "artist": metadata.get("artist", "Unknown Artist"),
-                "album": metadata.get("album", "Unknown Album"),
                 "duration": metadata.get("duration", 0),
-                "has_cover": metadata.get("has_cover", False),
-                "cover_mime": metadata.get("cover_mime"),
-                "cover_size": metadata.get("cover_size", 0),
-                "needs_fix": metadata.get("needs_fix", False),
-                "added": os.path.getctime(file_path) if os.path.exists(file_path) else 0
+                "cover": cover,
+                "path": playable_uri,
+                "viewed": False,
             }
             
             # Check if song already exists
             new_key = PlaylistManager._norm_file_path(file_path)
+            new_video_id = metadata.get("videoId", "").strip()
+            
             for existing_song in playlist_data["songs"]:
-                ep = existing_song.get("file_path")
+                # Check by file path (normalized)
+                ep = existing_song.get("file_path") or existing_song.get("path", "")
                 if ep and PlaylistManager._norm_file_path(ep) == new_key:
                     return False
-                if not dedupe_paths_only:
-                    if (
-                        existing_song.get("title") == song_entry["title"]
-                        and existing_song.get("artist") == song_entry["artist"]
-                    ):
+                
+                # Check by videoId (if both have it and match)
+                if new_video_id:
+                    existing_vid = existing_song.get("videoId", "").strip()
+                    if existing_vid and existing_vid == new_video_id:
                         return False
-            
+
             # Add song
             playlist_data["songs"].append(song_entry)
             playlist_data["modified"] = os.path.getctime(folder_path)
@@ -294,7 +301,11 @@ class PlaylistManager:
                 
                 # Update metadata
                 for key, value in metadata.items():
-                    if key in ["title", "artist", "album", "duration", "has_cover", "cover_mime", "cover_size", "needs_fix"]:
+                    if key in [
+                        "title", "artist", "album", "duration",
+                        "videoId", "cover", "path", "viewed",
+                        "has_cover", "cover_mime", "cover_size", "needs_fix",
+                    ]:
                         song[key] = value
                 
                 playlist_data["modified"] = os.path.getctime(folder_path)
@@ -396,7 +407,7 @@ class PlaylistManager:
                         "title": song.get("title"),
                         "artist": song.get("artist"),
                         "album": song.get("album"),
-                        "file_path": song.get("file_path"),
+                        "file_path": song.get("file_path") or song.get("path", ""),
                         "playlist": playlist["name"],
                         "playlist_path": playlist["folder_path"],
                         "match_reason": "Song metadata matches"
@@ -453,8 +464,8 @@ class PlaylistManager:
         playlist_data = PlaylistManager.get_playlist_info(folder_path)
         
         for i, song in enumerate(playlist_data["songs"]):
-            file_path = song.get("file_path")
-            
+            file_path = song.get("file_path") or song.get("path", "")
+
             if file_path and os.path.exists(file_path):
                 try:
                     metadata = get_audio_metadata(file_path)
@@ -464,10 +475,12 @@ class PlaylistManager:
                     song["artist"] = metadata.get("artist", song.get("artist"))
                     song["album"] = metadata.get("album", song.get("album"))
                     song["duration"] = metadata.get("duration", song.get("duration"))
-                    song["has_cover"] = metadata.get("has_cover", song.get("has_cover", False))
-                    song["cover_mime"] = metadata.get("cover_mime", song.get("cover_mime"))
-                    song["cover_size"] = metadata.get("cover_size", song.get("cover_size", 0))
-                    song["needs_fix"] = metadata.get("needs_fix", False)
+                    song["videoId"] = metadata.get("videoId", song.get("videoId", ""))
+                    
+                    # Update cover as base64 directly from metadata
+                    ext = os.path.splitext(file_path)[1].lstrip(".").lower()
+                    from app.logic.metadata.add_metadata import extract_cover_from_metadata
+                    song["cover"] = extract_cover_from_metadata(file_path, ext)
                     
                     results["fixed"] += 1
                     results["details"].append({
@@ -512,16 +525,72 @@ class PlaylistManager:
         try:
             with open(import_path, 'r', encoding='utf-8') as f:
                 playlist_data = json.load(f)
-            
+
             # Create playlist folder
             os.makedirs(target_folder, exist_ok=True)
-            
+
             # Save to new location
             json_path = os.path.join(target_folder, "playlist.json")
             with open(json_path, 'w', encoding='utf-8') as f:
                 json.dump(playlist_data, f, indent=2, ensure_ascii=False)
-            
+
             return True
         except Exception as e:
             log.error("Error importing playlist: %s", e)
             return False
+
+    @staticmethod
+    def recompress_all_covers(folder_path: str) -> Dict[str, Any]:
+        """
+        Recompress all cover images in playlist to reduce JSON size.
+        Returns stats: {"updated": int, "errors": int, "details": list}
+        """
+        from app.logic.metadata.add_metadata import extract_cover_from_metadata
+        
+        results = {
+            "updated": 0,
+            "errors": 0,
+            "details": []
+        }
+
+        playlist_data = PlaylistManager.get_playlist_info(folder_path)
+
+        for i, song in enumerate(playlist_data["songs"]):
+            file_path = song.get("file_path") or song.get("path", "")
+
+            if file_path and os.path.exists(file_path):
+                try:
+                    ext = os.path.splitext(file_path)[1].lstrip(".").lower()
+                    compressed_cover = extract_cover_from_metadata(file_path, ext)
+                    
+                    if compressed_cover:
+                        song["cover"] = compressed_cover
+                        results["updated"] += 1
+                        results["details"].append({
+                            "song": song.get("title", "Unknown"),
+                            "status": "Compressed",
+                            "details": f"Cover recompressed to 256x256 WebP"
+                        })
+                    else:
+                        results["errors"] += 1
+                        results["details"].append({
+                            "song": song.get("title", "Unknown"),
+                            "status": "No cover",
+                            "details": "No embedded cover found in audio file"
+                        })
+                except Exception as e:
+                    results["errors"] += 1
+                    results["details"].append({
+                        "song": song.get("title", "Unknown"),
+                        "status": "Error",
+                        "details": str(e)
+                    })
+
+        # Save updated playlist
+        if results["updated"] > 0:
+            playlist_data["modified"] = os.path.getctime(folder_path)
+            json_path = os.path.join(folder_path, "playlist.json")
+            with open(json_path, 'w', encoding='utf-8') as f:
+                json.dump(playlist_data, f, indent=2, ensure_ascii=False)
+
+        return results
