@@ -21,11 +21,32 @@ def _determine_fix_needed(metadata: Dict[str, Any]) -> None:
     cover_size = metadata.get("cover_size", 0)
 
     needs_fix = False
+    
+    # Basic checks
     if not artist or artist in ("", "Unknown Artist", "Unknown"):
         needs_fix = True
     if not title or title.startswith("Unknown"):
         needs_fix = True
     if not has_cover or cover_size < 1024:
+        needs_fix = True
+    
+    # AGGRESSIVE: Check if title looks like a videoId (11 chars, alphanumeric)
+    import re
+    if title and len(title) == 11 and re.match(r'^[\w-]{11}$', title):
+        needs_fix = True
+    
+    # AGGRESSIVE: Check if title contains YouTube artifacts that should be cleaned
+    youtube_artifacts = [
+        r'\(Official Music Video\)', r'\[Official Video\]', r'\(Lyrics\)',
+        r'\(Audio\)', r'\(Visualizer\)', r'\(4K\)', r'\(HD\)'
+    ]
+    for pattern in youtube_artifacts:
+        if re.search(pattern, title, re.IGNORECASE):
+            needs_fix = True
+            break
+    
+    # AGGRESSIVE: Title is just "Video" + numbers (like downloaded filename)
+    if re.match(r'^Video\s*\d+$', title, re.IGNORECASE):
         needs_fix = True
 
     metadata["needs_fix"] = needs_fix
@@ -298,16 +319,21 @@ def load_cover_pixmap_from_file(file_path: str):
     return None
 
 
-def scan_for_metadata_issues(download_path: str) -> list:
+def scan_for_metadata_issues(download_path: str, playlist_folder: str = None) -> list:
     """
-    Walk `download_path`, read metadata for every audio file,
+    Walk `download_path` (or `playlist_folder` if provided), read metadata for every audio file,
     return a list of ``{"file_path": ..., "metadata": ...}`` for files
     where ``needs_fix`` is True.
+    
+    If playlist_folder is provided, only scans that specific playlist folder.
     """
-    if not download_path or not os.path.isdir(download_path):
+    # Use playlist_folder if provided, otherwise use download_path
+    scan_path = playlist_folder if playlist_folder and os.path.isdir(playlist_folder) else download_path
+    
+    if not scan_path or not os.path.isdir(scan_path):
         return []
     results = []
-    for root, _dirs, files in os.walk(download_path):
+    for root, _dirs, files in os.walk(scan_path):
         for f in files:
             if os.path.splitext(f)[1].lower() not in _AUDIO_EXTS:
                 continue

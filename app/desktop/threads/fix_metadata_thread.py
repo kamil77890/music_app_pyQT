@@ -18,19 +18,76 @@ from mutagen.mp4 import MP4, MP4Cover
 from mutagen.mp3 import MP3
 from mutagen.easyid3 import EasyID3
 
+from app.desktop.utils.playlist_manager import PlaylistManager
+
 
 class FixMetadataThread(QThread):
     progress = pyqtSignal(int, int, str)   # current, total, filename
     complete = pyqtSignal(list)            # results list
     error    = pyqtSignal(str)
 
-    def __init__(self, songs_data: List[Dict]):
+    def __init__(self, songs_data: List[Dict], playlist_folder: Optional[str] = None):
         super().__init__()
         self.songs_data = songs_data
+        self.playlist_folder = playlist_folder  # Path to playlist folder for JSON sync
         self._stop = False
 
     def stop(self):
         self._stop = True
+
+    def _sync_to_playlist_json(self, results: List[Dict]):
+        """
+        Sync fixed metadata from audio files to playlist.json
+        (Audio files -> JSON direction)
+        Uses verify_metadata from add_metadata.py for consistent metadata extraction
+        """
+        if not self.playlist_folder or not os.path.isdir(self.playlist_folder):
+            return
+
+        try:
+            playlist_data = PlaylistManager.get_playlist_info(self.playlist_folder)
+            songs = playlist_data.get("songs", [])
+            updated_count = 0
+
+            for result in results:
+                if not result.get("success"):
+                    continue
+
+                file_path = result.get("file_path", "")
+                if not file_path:
+                    continue
+
+                # Find matching song in playlist by file path
+                for song in songs:
+                    song_path = song.get("file_path") or song.get("path", "")
+                    if os.path.normcase(os.path.abspath(song_path)) == os.path.normcase(os.path.abspath(file_path)):
+                        # Use verify_metadata from add_metadata.py for consistent extraction
+                        from app.logic.metadata.add_metadata import verify_metadata
+                        ext = os.path.splitext(file_path)[1].lstrip(".").lower()
+                        metadata = verify_metadata(file_path, ext)
+
+                        if metadata:
+                            # Update playlist.json with verified metadata
+                            song["title"] = metadata.get("title", song.get("title"))
+                            song["artist"] = metadata.get("artist", song.get("artist"))
+                            song["videoId"] = metadata.get("videoId", song.get("videoId", ""))
+                            song["cover"] = metadata.get("cover", "")
+                            song["has_cover"] = metadata.get("has_cover", False)
+
+                            updated_count += 1
+                            log.info("Synced %s to playlist.json", os.path.basename(file_path))
+                        break
+
+            # Save updated playlist
+            if updated_count > 0:
+                playlist_data["modified"] = os.path.getctime(self.playlist_folder)
+                json_path = os.path.join(self.playlist_folder, "playlist.json")
+                with open(json_path, 'w', encoding='utf-8') as f:
+                    json.dump(playlist_data, f, indent=2, ensure_ascii=False)
+                log.info("Synced %d songs to playlist.json", updated_count)
+
+        except Exception as e:
+            log.error("Error syncing to playlist.json: %s", e)
 
     # ── entry point ────────────────────────────────────────────
 
@@ -40,6 +97,21 @@ class FixMetadataThread(QThread):
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
 
+        # Load playlist.json data for JSON -> Audio sync
+        playlist_songs_map = {}
+        if self.playlist_folder and os.path.isdir(self.playlist_folder):
+            try:
+                playlist_data = PlaylistManager.get_playlist_info(self.playlist_folder)
+                for song in playlist_data.get("songs", []):
+                    song_path = song.get("file_path") or song.get("path", "")
+                    if song_path:
+                        # Normalize path for matching
+                        normalized = os.path.normcase(os.path.abspath(song_path))
+                        playlist_songs_map[normalized] = song
+                log.info("Loaded %d songs from playlist.json for sync", len(playlist_songs_map))
+            except Exception as e:
+                log.warning("Failed to load playlist.json: %s", e)
+
         for idx, song_data in enumerate(self.songs_data):
             if self._stop:
                 break
@@ -47,29 +119,61 @@ class FixMetadataThread(QThread):
             file_path    = song_data.get("file_path") or song_data.get("path", "")
             fetch_covers = song_data.get("fetch_covers", True)
             overwrite    = song_data.get("overwrite", False)
+            # New: if use_json_only is True, skip YouTube and only use playlist.json data
+            use_json_only = song_data.get("use_json_only", False)
 
             self.progress.emit(idx + 1, total, os.path.basename(file_path))
 
             result = {"file_path": file_path, "success": False, "error": None}
 
-            try:
-                ext = os.path.splitext(file_path)[1].lower()
-                if ext == ".mp3":
-                    ok = loop.run_until_complete(
-                        self._fix_mp3(file_path, fetch_covers, overwrite))
-                elif ext in (".mp4", ".m4a"):
-                    ok = loop.run_until_complete(
-                        self._fix_mp4(file_path, fetch_covers, overwrite))
-                else:
-                    result["error"] = f"Unsupported format: {ext}"
-                    results.append(result)
-                    continue
-                result["success"] = ok
-            except Exception as e:
-                result["error"] = str(e)
-                log.error("Error fixing %s: %s", file_path, e)
+            # Get playlist JSON data for this file (if exists)
+            normalized_path = os.path.normcase(os.path.abspath(file_path))
+            json_metadata = playlist_songs_map.get(normalized_path)
+
+            # If use_json_only is True and we have JSON metadata, sync directly
+            if use_json_only and json_metadata:
+                try:
+                    ext = os.path.splitext(file_path)[1].lower()
+                    # Use JSON metadata to fix audio file directly
+                    if ext == ".mp3":
+                        ok = loop.run_until_complete(
+                            self._fix_mp3_from_json(file_path, json_metadata, fetch_covers, overwrite))
+                    elif ext in (".mp4", ".m4a"):
+                        ok = loop.run_until_complete(
+                            self._fix_mp4_from_json(file_path, json_metadata, fetch_covers, overwrite))
+                    else:
+                        result["error"] = f"Unsupported format: {ext}"
+                        results.append(result)
+                        continue
+                    result["success"] = ok
+                    result["source"] = "playlist.json"
+                except Exception as e:
+                    result["error"] = str(e)
+                    log.error("Error fixing from JSON %s: %s", file_path, e)
+            else:
+                # Original behavior: use YouTube API
+                try:
+                    ext = os.path.splitext(file_path)[1].lower()
+                    if ext == ".mp3":
+                        ok = loop.run_until_complete(
+                            self._fix_mp3(file_path, fetch_covers, overwrite, json_metadata))
+                    elif ext in (".mp4", ".m4a"):
+                        ok = loop.run_until_complete(
+                            self._fix_mp4(file_path, fetch_covers, overwrite, json_metadata))
+                    else:
+                        result["error"] = f"Unsupported format: {ext}"
+                        results.append(result)
+                        continue
+                    result["success"] = ok
+                    result["source"] = "youtube"
+                except Exception as e:
+                    result["error"] = str(e)
+                    log.error("Error fixing %s: %s", file_path, e)
 
             results.append(result)
+
+        # Sync results to playlist.json (Audio files -> JSON)
+        self._sync_to_playlist_json(results)
 
         loop.close()
         self.complete.emit(results)
@@ -128,15 +232,6 @@ class FixMetadataThread(QThread):
 
         return None, None, None, None
 
-    async def _download_cover(self, url: str) -> tuple:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, timeout=aiohttp.ClientTimeout(total=20)) as resp:
-                resp.raise_for_status()
-                data = await resp.read()
-                ct = resp.headers.get("content-type", "image/jpeg")
-                mime = "image/png" if "png" in ct else "image/jpeg"
-                return data, mime
-
     # ── extract video ID ───────────────────────────────────────
 
     @staticmethod
@@ -179,7 +274,7 @@ class FixMetadataThread(QThread):
 
     # ── MP3 ────────────────────────────────────────────────────
 
-    async def _fix_mp3(self, file_path, fetch_covers, overwrite):
+    async def _fix_mp3(self, file_path, fetch_covers, overwrite, playlist_json_data=None):
         try:
             try:
                 id3 = ID3(file_path)
@@ -206,14 +301,27 @@ class FixMetadataThread(QThread):
             fn_title, fn_artist = self._title_artist_from_filename(file_path)
             search_q = f"{fn_artist} - {fn_title}" if fn_artist != "Unknown Artist" else fn_title
 
+            # Check if we have metadata from playlist.json
+            json_title = None
+            json_artist = None
+            json_video_id = None
+            if playlist_json_data:
+                json_title = playlist_json_data.get("title")
+                json_artist = playlist_json_data.get("artist")
+                json_video_id = playlist_json_data.get("videoId")
+                # Use videoId from JSON if not found in audio file
+                if json_video_id and not video_id:
+                    video_id = json_video_id
+
             yt_title, yt_artist, thumb_url, found_vid = await self._fetch_youtube(
                 video_id, search_query=search_q)
 
             if found_vid and not video_id:
                 video_id = found_vid
 
-            title  = yt_title
-            artist = yt_artist
+            # Priority: JSON data > YouTube > existing > filename
+            title = json_title or yt_title
+            artist = json_artist or yt_artist
 
             if not overwrite:
                 if ex_title and ex_title.text and not title:
@@ -234,31 +342,116 @@ class FixMetadataThread(QThread):
             if video_id:
                 id3.delall("TCON"); id3.add(TCON(encoding=3, text=video_id))
 
-            cover_data = ex_cover
-            cover_mime = ex_cmime
-
-            if fetch_covers and thumb_url and (overwrite or not cover_data):
-                try:
-                    cover_data, cover_mime = await self._download_cover(thumb_url)
-                except Exception as e:
-                    log.warning("Cover download failed: %s", e)
-
-            if cover_data and (overwrite or not ex_cover):
-                id3.delall("APIC")
-                id3.add(APIC(encoding=3, mime=cover_mime or "image/jpeg",
-                             type=3, desc="Cover", data=cover_data))
-                log.debug("Cover set (%d bytes)", len(cover_data))
-
+            # Save tags first
             id3.save(file_path, v2_version=3, v1=2)
+
+            # Use embed_image_mp3 from add_cover.py for cover embedding
+            if fetch_covers and thumb_url and (overwrite or not ex_cover):
+                try:
+                    from app.logic.metadata.add_cover import embed_image_mp3
+                    success = embed_image_mp3(file_path, image_url=thumb_url)
+                    if success:
+                        log.debug("Cover embedded via add_cover.py")
+                except Exception as e:
+                    log.warning("Cover embedding failed: %s", e)
+
             log.info("OK %s", os.path.basename(file_path))
             return True
         except Exception as e:
             log.exception("MP3 error: %s", e)
             return False
 
-    # ── MP4 / M4A ──────────────────────────────────────────────
+    # ── MP3 from JSON ─────────────────────────────────────────
 
-    async def _fix_mp4(self, file_path, fetch_covers, overwrite):
+    async def _fix_mp3_from_json(self, file_path, json_metadata, fetch_covers, overwrite):
+        """Fix MP3 using only playlist.json data (no YouTube API)"""
+        try:
+            try:
+                id3 = ID3(file_path)
+            except ID3NoHeaderError:
+                id3 = ID3()
+            except Exception:
+                id3 = ID3()
+
+            title = json_metadata.get("title")
+            artist = json_metadata.get("artist")
+            video_id = json_metadata.get("videoId")
+
+            if title:
+                id3.delall("TIT2"); id3.add(TIT2(encoding=3, text=title))
+            if artist:
+                id3.delall("TPE1"); id3.add(TPE1(encoding=3, text=artist))
+            if video_id:
+                id3.delall("TCON"); id3.add(TCON(encoding=3, text=video_id))
+
+            # Save tags first
+            id3.save(file_path, v2_version=3, v1=2)
+
+            # Embed cover from JSON if available
+            if fetch_covers and json_metadata.get("cover"):
+                try:
+                    import base64
+                    from app.logic.metadata.add_metadata import _compress_cover
+                    from app.logic.metadata.add_cover import embed_image_mp3
+                    
+                    # Cover is already base64 WebP in JSON, but embed_image_mp3 needs URL or bytes
+                    # For now, we'll use the thumbnail URL from JSON if available
+                    thumb_url = json_metadata.get("thumbnail_url")
+                    if thumb_url:
+                        success = embed_image_mp3(file_path, image_url=thumb_url)
+                        if success:
+                            log.debug("Cover embedded from JSON thumbnail URL")
+                except Exception as e:
+                    log.warning("JSON cover embedding failed: %s", e)
+
+            log.info("OK (from JSON) %s", os.path.basename(file_path))
+            return True
+        except Exception as e:
+            log.exception("MP3 from JSON error: %s", e)
+            return False
+
+    # ── MP4 from JSON ─────────────────────────────────────────
+
+    async def _fix_mp4_from_json(self, file_path, json_metadata, fetch_covers, overwrite):
+        """Fix MP4 using only playlist.json data (no YouTube API)"""
+        try:
+            audio = MP4(file_path)
+
+            title = json_metadata.get("title")
+            artist = json_metadata.get("artist")
+            video_id = json_metadata.get("videoId")
+
+            if title:
+                audio["\xa9nam"] = [title]
+            if artist:
+                audio["\xa9ART"] = [artist]
+            if video_id:
+                audio["\xa9cmt"] = [video_id]
+
+            # Save tags first
+            audio.save()
+
+            # Embed cover from JSON if available
+            if fetch_covers and json_metadata.get("cover"):
+                try:
+                    from app.logic.metadata.add_cover import embed_image_mp4
+                    
+                    # Use thumbnail URL from JSON if available
+                    thumb_url = json_metadata.get("thumbnail_url")
+                    if thumb_url:
+                        success = embed_image_mp4(file_path, image_url=thumb_url)
+                        if success:
+                            log.debug("Cover embedded from JSON thumbnail URL")
+                except Exception as e:
+                    log.warning("JSON cover embedding failed: %s", e)
+
+            log.info("OK (from JSON) %s", os.path.basename(file_path))
+            return True
+        except Exception as e:
+            log.exception("MP4 from JSON error: %s", e)
+            return False
+
+    async def _fix_mp4(self, file_path, fetch_covers, overwrite, playlist_json_data=None):
         try:
             audio = MP4(file_path)
 
@@ -275,14 +468,27 @@ class FixMetadataThread(QThread):
             fn_title, fn_artist = self._title_artist_from_filename(file_path)
             search_q = f"{fn_artist} - {fn_title}" if fn_artist != "Unknown Artist" else fn_title
 
+            # Check if we have metadata from playlist.json
+            json_title = None
+            json_artist = None
+            json_video_id = None
+            if playlist_json_data:
+                json_title = playlist_json_data.get("title")
+                json_artist = playlist_json_data.get("artist")
+                json_video_id = playlist_json_data.get("videoId")
+                # Use videoId from JSON if not found in audio file
+                if json_video_id and not video_id:
+                    video_id = json_video_id
+
             yt_title, yt_artist, thumb_url, found_vid = await self._fetch_youtube(
                 video_id, search_query=search_q)
 
             if found_vid and not video_id:
                 video_id = found_vid
 
-            title  = yt_title
-            artist = yt_artist
+            # Priority: JSON data > YouTube > existing > filename
+            title = json_title or yt_title
+            artist = json_artist or yt_artist
 
             if not overwrite:
                 if ex_title and not title:
@@ -303,16 +509,19 @@ class FixMetadataThread(QThread):
             if video_id:
                 audio["\xa9cmt"] = [video_id]
 
+            # Save tags first
+            audio.save()
+
+            # Use embed_image_mp4 from add_cover.py for cover embedding
             if fetch_covers and thumb_url and (overwrite or not ex_cover):
                 try:
-                    cover_data, _ = await self._download_cover(thumb_url)
-                    fmt = MP4Cover.FORMAT_PNG if thumb_url.lower().endswith(".png") else MP4Cover.FORMAT_JPEG
-                    audio["covr"] = [MP4Cover(cover_data, fmt)]
-                    log.debug("Cover set for MP4 (%d bytes)", len(cover_data))
+                    from app.logic.metadata.add_cover import embed_image_mp4
+                    success = embed_image_mp4(file_path, image_url=thumb_url)
+                    if success:
+                        log.debug("Cover embedded via add_cover.py")
                 except Exception as e:
-                    log.warning("MP4 cover download failed: %s", e)
+                    log.warning("MP4 cover embedding failed: %s", e)
 
-            audio.save()
             log.info("OK %s", os.path.basename(file_path))
             return True
         except Exception as e:

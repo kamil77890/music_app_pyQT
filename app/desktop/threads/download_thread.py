@@ -130,6 +130,18 @@ class DownloadThread(QThread):
 
                     downloaded.append(path)
                     self.progress.emit(100, title, i + 1, total)
+                    
+                    # Re-read metadata from the downloaded file to ensure accuracy
+                    try:
+                        from app.logic.metadata.add_metadata import verify_metadata
+                        ext = os.path.splitext(path)[1].lstrip(".").lower()
+                        fresh_metadata = verify_metadata(path, ext)
+                        if fresh_metadata:
+                            song_dict.update(fresh_metadata)
+                            log.info("Updated song_dict with fresh metadata from: %s", os.path.basename(path))
+                    except Exception as e:
+                        log.warning("Failed to read fresh metadata: %s", e)
+                    
                     self.song_complete.emit(song_dict, True, path, "")
                     self.download_manager.create_song_link(path, video_id, title, artist)
                 else:

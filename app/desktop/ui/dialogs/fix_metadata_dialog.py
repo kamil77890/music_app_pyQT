@@ -17,9 +17,10 @@ from app.desktop.threads.fix_metadata_thread import FixMetadataThread
 class FixMetadataDialog(QDialog):
     """Dialog to inspect and fix multiple files' metadata"""
 
-    def __init__(self, songs_data: List[Dict], parent=None):
+    def __init__(self, songs_data: List[Dict], playlist_folder: str = None, parent=None):
         super().__init__(parent)
         self.songs_data = songs_data
+        self.playlist_folder = playlist_folder
         self.setWindowTitle("🔧 Fix Song Metadata")
         self.setFixedSize(820, 680)
         self.fix_thread = None
@@ -98,17 +99,30 @@ class FixMetadataDialog(QDialog):
 
         # Options
         opts_frame = QFrame()
-        opts_layout = QHBoxLayout(opts_frame)
+        opts_layout = QVBoxLayout(opts_frame)
         opts_layout.setContentsMargins(0, 0, 0, 0)
+        opts_layout.setSpacing(8)
 
+        # First row of options
+        row1 = QHBoxLayout()
         self.fetch_covers = QCheckBox("Fetch & embed cover from YouTube")
         self.fetch_covers.setChecked(True)
         self.overwrite = QCheckBox("Overwrite existing metadata")
         self.overwrite.setChecked(False)
+        row1.addWidget(self.fetch_covers)
+        row1.addWidget(self.overwrite)
+        row1.addStretch()
+        opts_layout.addLayout(row1)
 
-        opts_layout.addWidget(self.fetch_covers)
-        opts_layout.addWidget(self.overwrite)
-        opts_layout.addStretch()
+        # Second row - JSON only option
+        row2 = QHBoxLayout()
+        self.use_json_only = QCheckBox("Use only playlist.json data (skip YouTube)")
+        self.use_json_only.setChecked(False)
+        self.use_json_only.setToolTip("Fix metadata using only data from playlist.json without querying YouTube API")
+        row2.addWidget(self.use_json_only)
+        row2.addStretch()
+        opts_layout.addLayout(row2)
+
         root.addWidget(opts_frame)
 
         # Buttons
@@ -165,13 +179,14 @@ class FixMetadataDialog(QDialog):
                 "file_path": sd.get("file_path") or sd.get("path", ""),
                 "metadata": sd.get("metadata"),
                 "fetch_covers": self.fetch_covers.isChecked(),
-                "overwrite": self.overwrite.isChecked()
+                "overwrite": self.overwrite.isChecked(),
+                "use_json_only": self.use_json_only.isChecked()
             })
 
         # Start background thread
-        self.fix_thread = FixMetadataThread(to_fix)
+        self.fix_thread = FixMetadataThread(to_fix, playlist_folder=self.playlist_folder)
         self.fix_thread.progress.connect(self.on_progress)
-        self.fix_thread.complete.connect(self.on_complete)  
+        self.fix_thread.complete.connect(self.on_complete)
         self.fix_thread.error.connect(self.on_error)
 
         # Modal progress dialog (native) to show progress

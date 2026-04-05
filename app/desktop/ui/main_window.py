@@ -35,6 +35,7 @@ from app.desktop.ui.pages.playlists_page            import PlaylistsPage
 from app.desktop.threads.search_thread              import SearchThread, AlbumTracksThread
 from app.desktop.ui.dialogs.download_manager_dialog import DownloadManagerDialog
 from app.desktop.ui.dialogs.fix_metadata_dialog     import FixMetadataDialog
+from app.desktop.ui.dialogs.refresh_metadata_dialog  import RefreshMetadataDialog
 from app.desktop.config                             import config
 from app.desktop.ui.widgets.audio_player            import AudioPlayerWidget
 from app.desktop.utils.helpers                      import song_to_dict, duration_to_ms
@@ -155,6 +156,7 @@ def _sidebar_divider() -> QFrame:
 class _Sidebar(QFrame):
     copy_cloud_url_clicked = pyqtSignal()
     fix_metadata_clicked   = pyqtSignal()
+    refresh_all_clicked    = pyqtSignal()  # NEW: refresh ALL songs
     library_item_clicked   = pyqtSignal(str)  # folder_path
 
     def __init__(self, parent=None):
@@ -258,6 +260,12 @@ class _Sidebar(QFrame):
         fix_btn = _NavItem("🔧", "Fix Metadata", "Title, artist & covers")
         fix_btn.clicked.connect(self.fix_metadata_clicked.emit)
         blay.addWidget(fix_btn)
+
+        # NEW: Refresh All Songs button
+        refresh_all_btn = _NavItem("🔄", "Refresh All Songs", "Re-download entire library")
+        refresh_all_btn.setStyleSheet("color:#ffa94d;")  # Orange color to distinguish
+        refresh_all_btn.clicked.connect(self.refresh_all_clicked.emit)
+        blay.addWidget(refresh_all_btn)
 
         root.addWidget(bottom)
 
@@ -462,6 +470,8 @@ class DesktopApp(QMainWindow):
         self._sidebar.copy_cloud_url_clicked.connect(self._on_copy_cloud_music_url)
         self._sidebar.fix_metadata_clicked.connect(
             lambda: self._open_metadata_fixer(auto=False))
+        self._sidebar.refresh_all_clicked.connect(
+            lambda: self._open_metadata_fixer(auto=False, refresh_all=True))
         self._sidebar.library_item_clicked.connect(self._on_sidebar_playlist_clicked)
 
         self._splitter.addWidget(self._sidebar)
@@ -1239,14 +1249,57 @@ class DesktopApp(QMainWindow):
             return
         self._open_metadata_fixer(auto=True)
 
-    def _open_metadata_fixer(self, auto: bool = False):
-        """Scan library and open the fix-metadata dialog.
-        If `auto` is True, only show when there are issues; otherwise always scan."""
+    def _open_metadata_fixer(self, auto: bool = False, playlist_folder: str = None, refresh_all: bool = False):
+        """Scan library and open the refresh-metadata dialog (re-downloads broken files).
+        If `auto` is True, only show when there are issues; otherwise always scan.
+        If `playlist_folder` is provided, only scan that specific playlist.
+        If `refresh_all` is True, scan all songs regardless of metadata status."""
         try:
             from app.desktop.utils.metadata import scan_for_metadata_issues
-            issues = scan_for_metadata_issues(config.get_download_path())
+            
+            # Use provided playlist_folder, or try to detect current playlist
+            if playlist_folder is None:
+                # Try to get current playlist from PlaylistsPage if it's the active page
+                if self._current_page == "playlists" and hasattr(self._playlists_page, '_current_detail_folder'):
+                    playlist_folder = self._playlists_page._current_detail_folder
+            
+            # Scan for issues (either in specific playlist or entire library)
+            if refresh_all:
+                # Scan ALL songs, not just those with issues
+                from app.desktop.utils.metadata import get_audio_metadata
+                import os
+                
+                scan_path = playlist_folder if playlist_folder and os.path.isdir(playlist_folder) else config.get_download_path()
+                all_issues = []
+                
+                for root, _dirs, files in os.walk(scan_path):
+                    for f in files:
+                        if os.path.splitext(f)[1].lower() in {'.mp3', '.m4a', '.mp4', '.flac', '.wav', '.ogg'}:
+                            fp = os.path.join(root, f)
+                            try:
+                                meta = get_audio_metadata(fp, include_cover_data=False)
+                                # Add ALL songs, not just those with needs_fix
+                                all_issues.append({"file_path": fp, "metadata": meta})
+                            except Exception:
+                                pass
+                
+                issues = all_issues
+                log.info("Scanning ALL songs in: %s, found %d total", scan_path, len(issues))
+            elif playlist_folder and os.path.isdir(playlist_folder):
+                issues = scan_for_metadata_issues(config.get_download_path(), playlist_folder=playlist_folder)
+                log.info("Scanning playlist: %s, found %d issues", playlist_folder, len(issues))
+            else:
+                issues = scan_for_metadata_issues(config.get_download_path())
+                log.info("Scanning entire library, found %d issues", len(issues))
+            
             if issues:
-                FixMetadataDialog(issues, self).exec_()
+                # Use RefreshMetadataDialog (re-downloads instead of fixing tags)
+                RefreshMetadataDialog(
+                    issues, 
+                    playlist_folder=playlist_folder, 
+                    parent=self,
+                    refresh_all_mode=refresh_all
+                ).exec_()
             elif not auto:
                 QMessageBox.information(
                     self, "Metadata",
