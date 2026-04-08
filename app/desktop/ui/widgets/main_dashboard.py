@@ -208,6 +208,7 @@ class MainDashboard(QWidget):
     album_clicked              = pyqtSignal(str)
     artist_clicked             = pyqtSignal(str)
     refresh_requested          = pyqtSignal()
+    lyrics_requested           = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -299,7 +300,37 @@ class MainDashboard(QWidget):
 
         shr.addWidget(self._action_bar); blay.addWidget(shw)
 
-        # Responsive song grid
+        # ── NEW: Popular Recommendations Section ────────────────
+        self._popular_hdr = _section_header("🔥 Popular from Your Library")
+        self._popular_hdr.setVisible(False)
+        blay.addWidget(self._popular_hdr)
+        
+        self._popular_scroll = QScrollArea()
+        self._popular_scroll.setWidgetResizable(True)
+        self._popular_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._popular_scroll.setFrameShape(QFrame.NoFrame)
+        self._popular_scroll.setStyleSheet("background:transparent;border:none;")
+        self._popular_scroll.setVisible(False)
+        self._popular_grid = _ResponsiveSongGrid()
+        self._popular_scroll.setWidget(self._popular_grid)
+        blay.addWidget(self._popular_scroll)
+
+        # ── NEW: New Releases Section ───────────────────────────
+        self._new_hdr = _section_header("✨ New Releases (2026-2027)")
+        self._new_hdr.setVisible(False)
+        blay.addWidget(self._new_hdr)
+        
+        self._new_scroll = QScrollArea()
+        self._new_scroll.setWidgetResizable(True)
+        self._new_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._new_scroll.setFrameShape(QFrame.NoFrame)
+        self._new_scroll.setStyleSheet("background:transparent;border:none;")
+        self._new_scroll.setVisible(False)
+        self._new_grid = _ResponsiveSongGrid()
+        self._new_scroll.setWidget(self._new_grid)
+        blay.addWidget(self._new_scroll)
+
+        # Responsive song grid (for regular search results)
         self._songs_scroll = QScrollArea(); self._songs_scroll.setWidgetResizable(True)
         self._songs_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self._songs_scroll.setFrameShape(QFrame.NoFrame)
@@ -341,6 +372,13 @@ class MainDashboard(QWidget):
         rfr = QPushButton("🔄 Refresh Picks"); rfr.setObjectName("topbar_link")
         rfr.setToolTip("Refresh recommendations from your library")
         rfr.clicked.connect(self.refresh_requested); lay.addWidget(rfr)
+        
+        lyrics_btn = QPushButton("📝 Add Lyrics")
+        lyrics_btn.setObjectName("topbar_link")
+        lyrics_btn.setToolTip("Download lyrics for all songs in library")
+        lyrics_btn.clicked.connect(self.lyrics_requested)
+        lay.addWidget(lyrics_btn)
+        
         return bar
 
     # ── search ──────────────────────────────────────────────────
@@ -442,6 +480,108 @@ class MainDashboard(QWidget):
             except Exception as exc:
                 log.warning("Song card creation error: %s", exc)
         self._song_grid.set_cards(self._song_cards)
+
+    # ── NEW: Popular recommendations ────────────────────────────
+
+    def set_popular_results(self, songs):
+        """Display popular recommendations with 🔥 badge"""
+        self._popular_grid.clear()
+        
+        if not songs:
+            self._popular_hdr.setVisible(False)
+            self._popular_scroll.setVisible(False)
+            return
+        
+        self._popular_hdr.setVisible(True)
+        self._popular_scroll.setVisible(True)
+        
+        from app.desktop.ui.widgets.song_card import SongCard
+        cards = []
+        for entry in songs:
+            try:
+                card = SongCard(entry, hide_hover_play_button=True)
+                card._entry_dict = entry
+                card.play_btn.clicked.connect(
+                    lambda _, e=entry: self.song_card_download_clicked.emit(e))
+                
+                # Add badge
+                self._add_badge_to_card(card, "🔥 Popular", "#f0b429")
+                
+                cards.append(card)
+            except Exception as exc:
+                log.warning("Popular song card creation error: %s", exc)
+        
+        self._popular_grid.set_cards(cards)
+        # Set max height to show ~2 rows
+        max_height = min(len(cards), 10) * 290 // 5 + 50
+        self._popular_scroll.setFixedHeight(min(max_height, 620))
+
+    # ── NEW: New releases ──────────────────────────────────────
+
+    def set_new_results(self, songs):
+        """Display new release recommendations with ✨ badge"""
+        self._new_grid.clear()
+        
+        if not songs:
+            self._new_hdr.setVisible(False)
+            self._new_scroll.setVisible(False)
+            return
+        
+        # Update header with current year
+        from datetime import datetime
+        current_year = datetime.now().year
+        next_year = current_year + 1
+        self._new_hdr.findChild(QLabel).setText(f"✨ New Releases ({current_year}-{next_year})")
+        
+        self._new_hdr.setVisible(True)
+        self._new_scroll.setVisible(True)
+        
+        from app.desktop.ui.widgets.song_card import SongCard
+        cards = []
+        for entry in songs:
+            try:
+                card = SongCard(entry, hide_hover_play_button=True)
+                card._entry_dict = entry
+                card.play_btn.clicked.connect(
+                    lambda _, e=entry: self.song_card_download_clicked.emit(e))
+                
+                # Add badge
+                self._add_badge_to_card(card, "✨ NEW", "#4d59fb")
+                
+                cards.append(card)
+            except Exception as exc:
+                log.warning("New song card creation error: %s", exc)
+        
+        self._new_grid.set_cards(cards)
+        # Set max height to show ~2 rows
+        max_height = min(len(cards), 10) * 290 // 5 + 50
+        self._new_scroll.setFixedHeight(min(max_height, 620))
+
+    def _add_badge_to_card(self, card, text, color):
+        """Add a badge to the top-right corner of a song card"""
+        from PyQt5.QtWidgets import QLabel
+        from PyQt5.QtCore import Qt
+        
+        badge = QLabel(text)
+        badge.setStyleSheet(f"""
+            background: {color};
+            color: white;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 10px;
+            font-weight: bold;
+            font-family: 'JetBrains Mono', monospace;
+        """)
+        badge.setAlignment(Qt.AlignCenter)
+        badge.setParent(card)
+        badge.move(10, 10)
+        badge.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        badge.show()
+        
+        # Store reference for cleanup
+        if not hasattr(card, '_badges'):
+            card._badges = []
+        card._badges.append(badge)
 
     # ── selection ────────────────────────────────────────────────
 

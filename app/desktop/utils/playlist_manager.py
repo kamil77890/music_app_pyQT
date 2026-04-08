@@ -194,19 +194,21 @@ class PlaylistManager:
             name = os.path.splitext(os.path.basename(file_path))[0]
             playable_uri = os.path.abspath(file_path)
 
-            # Get cover as base64 directly from song metadata
-            cover = ""
+            # Get cover data from song metadata (both URL and base64 fallback)
+            cover_data = {"cover_base64": "", "cover_url": "", "has_cover": False}
             if os.path.exists(file_path) and metadata.get("has_cover"):
                 from app.logic.metadata.add_metadata import extract_cover_from_metadata
                 ext = os.path.splitext(file_path)[1].lstrip(".").lower()
-                cover = extract_cover_from_metadata(file_path, ext)
+                video_id = metadata.get("videoId", "")
+                cover_data = extract_cover_from_metadata(file_path, ext, video_id)
 
             song_entry = {
                 "videoId": metadata.get("videoId", ""),
                 "title": metadata.get("title", name),
                 "artist": metadata.get("artist", "Unknown Artist"),
                 "duration": metadata.get("duration", 0),
-                "cover": cover,
+                "cover": cover_data.get("cover_url", ""),  # Primary: YouTube URL
+                "cover_base64": cover_data.get("cover_base64", ""),  # Fallback: offline mode
                 "path": playable_uri,
                 "viewed": False,
             }
@@ -469,18 +471,21 @@ class PlaylistManager:
             if file_path and os.path.exists(file_path):
                 try:
                     metadata = get_audio_metadata(file_path)
-                    
+
                     # Update song metadata
                     song["title"] = metadata.get("title", song.get("title"))
                     song["artist"] = metadata.get("artist", song.get("artist"))
                     song["album"] = metadata.get("album", song.get("album"))
                     song["duration"] = metadata.get("duration", song.get("duration"))
                     song["videoId"] = metadata.get("videoId", song.get("videoId", ""))
-                    
-                    # Update cover as base64 directly from metadata
-                    ext = os.path.splitext(file_path)[1].lstrip(".").lower()
+
+                    # Update cover data (both URL and base64 fallback)
                     from app.logic.metadata.add_metadata import extract_cover_from_metadata
-                    song["cover"] = extract_cover_from_metadata(file_path, ext)
+                    ext = os.path.splitext(file_path)[1].lstrip(".").lower()
+                    video_id = song.get("videoId", "")
+                    cover_data = extract_cover_from_metadata(file_path, ext, video_id)
+                    song["cover"] = cover_data.get("cover_url", "")  # Primary: YouTube URL
+                    song["cover_base64"] = cover_data.get("cover_base64", "")  # Fallback
                     
                     results["fixed"] += 1
                     results["details"].append({
@@ -543,10 +548,11 @@ class PlaylistManager:
     def recompress_all_covers(folder_path: str) -> Dict[str, Any]:
         """
         Recompress all cover images in playlist to reduce JSON size.
+        Now stores YouTube URL as primary and base64 as fallback.
         Returns stats: {"updated": int, "errors": int, "details": list}
         """
         from app.logic.metadata.add_metadata import extract_cover_from_metadata
-        
+
         results = {
             "updated": 0,
             "errors": 0,
@@ -561,15 +567,17 @@ class PlaylistManager:
             if file_path and os.path.exists(file_path):
                 try:
                     ext = os.path.splitext(file_path)[1].lstrip(".").lower()
-                    compressed_cover = extract_cover_from_metadata(file_path, ext)
-                    
-                    if compressed_cover:
-                        song["cover"] = compressed_cover
+                    video_id = song.get("videoId", "")
+                    cover_data = extract_cover_from_metadata(file_path, ext, video_id)
+
+                    if cover_data.get("has_cover"):
+                        song["cover"] = cover_data.get("cover_url", "")  # Primary: YouTube URL
+                        song["cover_base64"] = cover_data.get("cover_base64", "")  # Fallback
                         results["updated"] += 1
                         results["details"].append({
                             "song": song.get("title", "Unknown"),
                             "status": "Compressed",
-                            "details": f"Cover recompressed to 256x256 WebP"
+                            "details": f"Cover updated with YouTube URL + base64 fallback"
                         })
                     else:
                         results["errors"] += 1

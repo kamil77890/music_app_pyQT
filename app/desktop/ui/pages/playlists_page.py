@@ -142,7 +142,9 @@ class _PlaylistDetailThread(QThread):
                 if not cover and os.path.exists(fp):
                     try:
                         ext = os.path.splitext(fp)[1].lstrip(".").lower()
-                        cover = extract_cover_from_metadata(fp, ext)
+                        video_id = song.get("videoId", "")
+                        cover_data = extract_cover_from_metadata(fp, ext, video_id)
+                        cover = cover_data.get("cover_url", "") or cover_data.get("cover_base64", "")
                     except Exception:
                         pass
 
@@ -712,7 +714,9 @@ class PlaylistsPage(QWidget):
                     try:
                         from app.logic.metadata.add_metadata import extract_cover_from_metadata
                         ext = os.path.splitext(fp)[1].lstrip(".").lower()
-                        cover = extract_cover_from_metadata(fp, ext)
+                        video_id = song_data.get("videoId", "") if isinstance(song_data, dict) else ""
+                        cover_data = extract_cover_from_metadata(fp, ext, video_id)
+                        cover = cover_data.get("cover_url", "") or cover_data.get("cover_base64", "")
                     except Exception:
                         pass
 

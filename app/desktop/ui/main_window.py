@@ -490,6 +490,7 @@ class DesktopApp(QMainWindow):
         self._discover_page.album_clicked.connect(self._on_album_clicked)
         self._discover_page.artist_clicked.connect(self._on_artist_clicked)
         self._discover_page.refresh_requested.connect(self._on_refresh_recommendations)
+        self._discover_page.lyrics_requested.connect(self._on_add_lyrics)
         self._stack.addWidget(self._discover_page)
 
         # PAGE_PLAYLISTS = 1
@@ -671,7 +672,8 @@ class DesktopApp(QMainWindow):
         if try_load_cached_queries and os.path.isdir(download_path):
             cached = try_load_cached_queries(download_path)
             if cached:
-                self._apply_recommendation_queries(cached, save_cache=False)
+                # Use cached queries directly
+                self._on_search(cached[0])
                 return
         self._run_recommender(randomise=False)
 
@@ -698,39 +700,124 @@ class DesktopApp(QMainWindow):
 
         self._recommender_thread = RecommenderThread(
             download_path=download_path,
-            max_results=10,
+            max_results=12,
             randomise=randomise,
         )
-        self._recommender_thread.recommendations_ready.connect(
-            self._on_recommendations_ready_from_thread)
+        # Connect to both signals
+        self._recommender_thread.popular_ready.connect(
+            self._on_popular_ready)
+        self._recommender_thread.new_ready.connect(
+            self._on_new_ready)
         self._recommender_thread.error.connect(
-            lambda e: log.error("Recommender error: %s", e))
+            lambda e: self._discover_page.show_loading(f"Recommendation error: {e}"))
         self._recommender_thread.start()
 
     @pyqtSlot(list, int)
-    def _on_recommendations_ready_from_thread(self, queries: list, library_song_count: int):
-        self._apply_recommendation_queries(queries, save_cache=True, library_song_count=library_song_count)
-
-    def _apply_recommendation_queries(
-        self,
-        queries: list,
-        *,
-        save_cache: bool,
-        library_song_count: int = 0,
-    ) -> None:
-        self._initial_rec_done = True
-        if not queries:
+    def _on_popular_ready(self, queries: list, library_song_count: int):
+        """Handle popular/classic recommendations"""
+        tag_analysis = getattr(self._recommender_thread, '_last_tag_analysis', {})
+        
+        # Save for later
+        self._popular_queries = queries
+        self._library_count = library_song_count
+        self._tag_analysis = tag_analysis
+        
+        if queries:
+            # Search first popular query and display results
+            self._current_search_mode = "popular"
+            self._on_search(queries[0])
+        else:
             self._discover_page.show_loading(
                 "Download some music first — your recommendations will appear here.")
+
+    @pyqtSlot(list, int)
+    def _on_new_ready(self, queries: list, library_song_count: int):
+        """Handle new release recommendations"""
+        self._new_queries = queries
+        
+        if queries:
+            # Save cache with both query sets
+            self._save_recommendation_cache()
+    
+    def _save_recommendation_cache(self):
+        """Save both popular and new queries to cache"""
+        if not hasattr(self, '_popular_queries'):
             return
-        if save_cache:
-            try:
-                from app.desktop.utils.recommendation_cache import save_cached_queries
-                save_cached_queries(
-                    config.get_download_path(), queries, library_song_count)
-            except Exception as exc:
-                log.debug("Recommendation cache save: %s", exc)
-        self._on_search(queries[0])
+        
+        try:
+            from app.desktop.utils.recommendation_cache import save_cached_queries
+            genre_dist = self._tag_analysis.get("genres", {}) if hasattr(self, '_tag_analysis') and self._tag_analysis else {}
+            artist_dist = self._tag_analysis.get("artists", {}) if hasattr(self, '_tag_analysis') and self._tag_analysis else {}
+            
+            # Combine both query types
+            all_queries = self._popular_queries + self._new_queries
+            
+            save_cached_queries(
+                config.get_download_path(),
+                all_queries,
+                self._library_count,
+                genre_distribution=genre_dist or None,
+                artist_distribution=artist_dist or None,
+            )
+        except Exception:
+            pass
+
+    # ── lyrics ─────────────────────────────────────────────────
+
+    def _on_add_lyrics(self):
+        """Handle request to add lyrics to all songs"""
+        from app.desktop.threads.add_subtitles_thread import AddSubtitlesThread
+        from PyQt5.QtWidgets import QProgressDialog, QMessageBox
+        
+        # Get "All Songs" folder
+        from app.desktop.utils.playlist_manager import PlaylistManager
+        playlist_folder = PlaylistManager.default_playlist_folder_path(config.get_download_path())
+        
+        if not os.path.isdir(playlist_folder):
+            QMessageBox.warning(self, "Error", "Playlist folder not found")
+            return
+        
+        # Create progress dialog
+        self._lyrics_progress = QProgressDialog("Adding lyrics...", "Cancel", 0, 100, self)
+        self._lyrics_progress.setWindowModality(Qt.WindowModal)
+        self._lyrics_progress.setMinimumDuration(0)
+        self._lyrics_progress.setWindowTitle("Add Lyrics")
+        
+        # Create and start thread
+        self._lyrics_thread = AddSubtitlesThread(playlist_folder)
+        self._lyrics_thread.progress.connect(self._on_lyrics_progress)
+        self._lyrics_thread.complete.connect(self._on_lyrics_complete)
+        self._lyrics_thread.error.connect(self._on_lyrics_error)
+        self._lyrics_progress.canceled.connect(self._lyrics_thread.stop)
+        self._lyrics_thread.start()
+    
+    def _on_lyrics_progress(self, current, total, title):
+        """Update progress dialog"""
+        if hasattr(self, '_lyrics_progress'):
+            self._lyrics_progress.setMaximum(total)
+            self._lyrics_progress.setValue(current)
+            self._lyrics_progress.setLabelText(f"Processing: {title}\n({current}/{total})")
+    
+    def _on_lyrics_complete(self, success, failed):
+        """Handle completion"""
+        if hasattr(self, '_lyrics_progress'):
+            self._lyrics_progress.close()
+        
+        from PyQt5.QtWidgets import QMessageBox
+        msg = f"Lyrics added successfully!\n\n"
+        msg += f"✅ Success: {success}\n"
+        if failed > 0:
+            msg += f"❌ Failed (no subtitles available): {failed}"
+        
+        QMessageBox.information(self, "Add Lyrics Complete", msg)
+    
+    def _on_lyrics_error(self, error):
+        """Handle error"""
+        if hasattr(self, '_lyrics_progress'):
+            self._lyrics_progress.close()
+        
+        from PyQt5.QtWidgets import QMessageBox
+        QMessageBox.critical(self, "Error", f"Failed to add lyrics:\n{error}")
 
     # ── search ─────────────────────────────────────────────────
 
@@ -1353,6 +1440,8 @@ class DesktopApp(QMainWindow):
         threads = [self._search_thread, self._album_thread, self._recommender_thread]
         if hasattr(self, '_b2_thread'):
             threads.append(self._b2_thread)
+        if hasattr(self, '_lyrics_thread'):
+            threads.append(self._lyrics_thread)
         for t in threads:
             if t and t.isRunning():
                 try:

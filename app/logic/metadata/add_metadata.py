@@ -33,33 +33,59 @@ def _compress_cover(image_data: bytes, max_size: int = 256, quality: int = 80) -
     """
     try:
         img = Image.open(BytesIO(image_data))
-        
+
         # Convert RGBA to RGB if needed
         if img.mode in ('RGBA', 'LA', 'P'):
             img = img.convert('RGB')
-        
+
         # Resize to max_size while keeping aspect ratio
         img.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
-        
+
         # Compress to WebP (much smaller than JPEG at same quality)
         buffer = BytesIO()
         img.save(buffer, format='WEBP', quality=quality, method=6)
         compressed_data = buffer.getvalue()
-        
+
         return base64.b64encode(compressed_data).decode('utf-8')
     except Exception as e:
         print(f"⚠️ Cover compression failed: {e}")
         return ""
 
 
-def extract_cover_from_metadata(file_path: str, format: str) -> str:
+def build_youtube_cover_url(video_id: str) -> str:
     """
-    Extract cover image from song metadata, compress it, and return as base64 JPEG.
-    Returns empty string if no cover found.
+    Build YouTube thumbnail URL from videoId.
+    Returns maxresdefault URL (highest quality).
     """
+    if not video_id or len(video_id) != 11:
+        return ""
+    return f"https://i.ytimg.com/vi/{video_id}/maxresdefault.jpg"
+
+
+def extract_cover_from_metadata(file_path: str, format: str, video_id: str = "") -> dict:
+    """
+    Extract cover image from song metadata and return as dict with both base64 and YouTube URL.
+    
+    Returns:
+        {
+            "cover_base64": str,  # Compressed base64 WebP for offline fallback
+            "cover_url": str,     # YouTube thumbnail URL for online display
+            "has_cover": bool     # True if cover exists
+        }
+    """
+    result = {
+        "cover_base64": "",
+        "cover_url": "",
+        "has_cover": False
+    }
+    
+    # Build YouTube URL if video_id is provided
+    if video_id:
+        result["cover_url"] = build_youtube_cover_url(video_id)
+    
     try:
         image_data = None
-        
+
         if format.lower() == 'mp3':
             id3 = ID3(file_path)
             for key in id3.keys():
@@ -67,7 +93,7 @@ def extract_cover_from_metadata(file_path: str, format: str) -> str:
                     apic = id3[key]
                     image_data = apic.data
                     break
-                    
+
         elif format.lower() in ('mp4', 'm4a'):
             audio = MP4(file_path)
             if 'covr' in audio:
@@ -76,14 +102,15 @@ def extract_cover_from_metadata(file_path: str, format: str) -> str:
                     image_data = cover_data.data
                 else:
                     image_data = bytes(cover_data)
-        
+
         if image_data:
-            return _compress_cover(image_data)
-                
+            result["cover_base64"] = _compress_cover(image_data)
+            result["has_cover"] = bool(result["cover_base64"] or result["cover_url"])
+
     except Exception as e:
         print(f"❌ Error extracting cover: {e}")
-    
-    return ""
+
+    return result
 
 
 def verify_metadata(file_path: str, format: str) -> dict:
@@ -98,14 +125,16 @@ def verify_metadata(file_path: str, format: str) -> dict:
             title = str(id3.get('TIT2', 'N/A'))
             artist = str(id3.get('TPE1', 'N/A'))
             videoId = str(id3.get('TCON', 'N/A'))
-            cover = extract_cover_from_metadata(file_path, format)
+            cover_data = extract_cover_from_metadata(file_path, format, videoId)
+            cover = cover_data.get("cover_url", "") or cover_data.get("cover_base64", "")
 
         elif format.lower() in ('mp4', 'm4a'):
             audio = MP4(file_path)
             title = audio.get('\xa9nam', ['N/A'])[0]
             artist = audio.get('\xa9ART', ['N/A'])[0]
             videoId = audio.get('\xa9cmt', ['N/A'])[0]
-            cover = extract_cover_from_metadata(file_path, format)
+            cover_data = extract_cover_from_metadata(file_path, format, videoId)
+            cover = cover_data.get("cover_url", "") or cover_data.get("cover_base64", "")
 
         return {
             'title': title,

@@ -329,8 +329,19 @@ class PlaylistCard(QFrame):
         try:
             from app.logic.metadata.add_metadata import extract_cover_from_metadata
             ext = os.path.splitext(file_path)[1].lstrip(".").lower()
-            cover_base64 = extract_cover_from_metadata(file_path, ext)
             
+            # Extract videoId from file metadata if possible
+            video_id = ""
+            try:
+                from mutagen.id3 import ID3
+                id3 = ID3(file_path)
+                video_id = str(id3.get('TCON', ''))
+            except Exception:
+                pass
+            
+            cover_data = extract_cover_from_metadata(file_path, ext, video_id)
+            cover_base64 = cover_data.get("cover_base64", "")
+
             if cover_base64:
                 import base64
                 from PyQt5.QtGui import QPixmap

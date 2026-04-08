@@ -1,16 +1,17 @@
 """
 Cache ostatnich rekomendacji (lista zapytań wyszukiwania) na dysku.
 Unieważnianie przy zmianie folderu biblioteki lub liczby plików audio.
+Rozbudowany: zapisuje także dystrybucję gatunków i artystów.
 """
 from __future__ import annotations
 
 import json
 import os
-from typing import List, Optional
+from typing import List, Optional, Dict
 
 from app.desktop.config import CONFIG_FILE
 
-CACHE_VERSION = 1
+CACHE_VERSION = 2  # Increased for new format
 _CACHE_PATH = CONFIG_FILE.parent / "recommendations_cache.json"
 
 _AUDIO_EXTS = {".mp3", ".m4a", ".mp4", ".flac", ".wav", ".ogg"}
@@ -70,8 +71,10 @@ def save_cached_queries(
     download_path: str,
     queries: List[str],
     library_song_count: int,
+    genre_distribution: Optional[Dict[str, int]] = None,
+    artist_distribution: Optional[Dict[str, int]] = None,
 ) -> None:
-    """Zapisuje wynik działania RecommenderThread."""
+    """Zapisuje wynik działania RecommenderThread z pełnym profilem preferencji."""
     if not queries or library_song_count < 0:
         return
     try:
@@ -82,6 +85,13 @@ def save_cached_queries(
             "library_song_count": library_song_count,
             "queries": list(queries),
         }
+        
+        # Add distribution data if available
+        if genre_distribution:
+            payload["genre_distribution"] = genre_distribution
+        if artist_distribution:
+            payload["artist_distribution"] = artist_distribution
+        
         with open(_CACHE_PATH, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False, indent=2)
     except Exception:

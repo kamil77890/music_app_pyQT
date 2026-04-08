@@ -108,11 +108,29 @@ class SongCard(QFrame):
             self._apply_thumbnail_scale()
 
     def load_thumbnail(self):
-        # Try cover from JSON (base64 encoded WebP/JPEG from song metadata)
-        b64 = get_field(self.entry, "cover", "")
+        # Priority 1: Try cover URL from JSON (YouTube URL - works on other devices)
+        cover_url = get_field(self.entry, "cover", "")
+        if cover_url and cover_url.startswith("http"):
+            self.cleanup_thumbnail_loader()
+            self.thumbnail_loader = ThumbnailLoader(_upgrade_yt_url(cover_url))
+            self.thumbnail_loader.loaded.connect(self.set_thumbnail)
+            self.thumbnail_loader.error.connect(lambda: self._try_base64_fallback())
+            self.thumbnail_loader.finished.connect(self.on_thumbnail_loader_finished)
+            self.thumbnail_loader.start()
+            return
+
+        # Priority 2: Try base64 fallback (for offline mode)
+        self._try_base64_fallback()
+
+    def _try_base64_fallback(self):
+        # Try cover_base64 field (offline fallback)
+        b64 = get_field(self.entry, "cover_base64", "")
         if b64:
             try:
                 import base64
+                # Handle data: URI format
+                if b64.startswith("data:"):
+                    b64 = b64.split(",", 1)[1]
                 data = base64.b64decode(b64)
                 img = QImage()
                 img.loadFromData(data)
@@ -122,7 +140,22 @@ class SongCard(QFrame):
                     return
             except Exception:
                 pass
-        
+
+        # Fallback to old cover field (backward compatibility - might be old base64)
+        old_cover = get_field(self.entry, "cover", "")
+        if old_cover and not old_cover.startswith("http") and len(old_cover) > 200:
+            try:
+                import base64
+                data = base64.b64decode(old_cover)
+                img = QImage()
+                img.loadFromData(data)
+                px = QPixmap.fromImage(img)
+                if not px.isNull():
+                    self.set_thumbnail(px)
+                    return
+            except Exception:
+                pass
+
         # Fallback to old cover_base64 field
         b64 = get_field(self.entry, "cover_base64", "")
         if b64:
@@ -137,7 +170,7 @@ class SongCard(QFrame):
                     return
             except Exception:
                 pass
-        
+
         # Fallback to YouTube URLs
         raw = get_field(self.entry, "thumbnail", "") or get_field(self.entry, "high_res_thumbnail", "")
         if not raw:
