@@ -424,11 +424,19 @@ class DesktopApp(QMainWindow):
             from app.desktop.utils.global_hotkeys import start_global_hotkeys
         except ImportError:
             return
+
+        def _toggle_window():
+            if self.isVisible() and not self.isMinimized():
+                self.hide()
+            else:
+                self._show_main_window()
+
         self._global_hotkeys_stop = start_global_hotkeys(
             on_play_pause=self._audio.toggle_play,
             on_prev=self._audio.previous_song,
             on_next=self._audio.next_song,
             on_mute=self._on_bottom_mute_toggle,
+            on_show_hide=_toggle_window,
         )
 
     def changeEvent(self, event):
