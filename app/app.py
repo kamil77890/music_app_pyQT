@@ -16,6 +16,7 @@ from app.endpoints import (
     video_url,
     register,
     playlists,
+    recommendations
 )
 from app.endpoints import cloud as cloud_router
 
@@ -55,6 +56,7 @@ class Application:
         self.app.include_router(register.router)
         self.app.include_router(cloud_router.router)
         self.app.include_router(playlists.router)
+        self.app.include_router(recommendations.router)
 
     def run(self) -> FastAPI:
         self.set_up()

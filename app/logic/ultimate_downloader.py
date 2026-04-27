@@ -17,7 +17,6 @@ from app.logic.api_handler.handle_yt import get_video_by_id
 
 
 def _download_dir() -> str:
-    """Świeża ścieżka przy każdym wywołaniu (FILEPATH / domyślna biblioteka)."""
     return Parameters.get_download_dir()
 
 
