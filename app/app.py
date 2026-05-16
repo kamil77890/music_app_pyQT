@@ -1,6 +1,14 @@
+import logging
+import threading
+import time
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.config.stałe import Parameters
+from app.db.database import init_db
+from app.db.migrate_json import migrate_json_to_postgres
+from app.logic.api_handler.handle_feed import run_subscription_poll
 
 from app.endpoints import (
     download,
@@ -19,6 +27,35 @@ from app.endpoints import (
     recommendations
 )
 from app.endpoints import cloud as cloud_router
+from app.endpoints import subscriptions as subs_router
+from app.endpoints import tags as tags_router
+
+log = logging.getLogger(__name__)
+
+POLL_INTERVAL_SECONDS = 1800
+
+
+def _polling_loop() -> None:
+    while True:
+        try:
+            run_subscription_poll()
+        except Exception:
+            log.exception("Subscription poll failed")
+        time.sleep(POLL_INTERVAL_SECONDS)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    init_db()
+    try:
+        migrate_json_to_postgres()
+    except Exception:
+        log.exception("JSON migration to PostgreSQL failed")
+    thread = threading.Thread(
+        target=_polling_loop, daemon=True, name="subscription-poller"
+    )
+    thread.start()
+    yield
 
 
 class Application:
@@ -27,6 +64,7 @@ class Application:
             title="Music API",
             description="FastAPI version of Flask app",
             version="1.0.0",
+            lifespan=lifespan,
         )
 
         self.app.add_middleware(
@@ -57,6 +95,10 @@ class Application:
         self.app.include_router(cloud_router.router)
         self.app.include_router(playlists.router)
         self.app.include_router(recommendations.router)
+        self.app.include_router(subs_router.router)
+        self.app.include_router(subs_router.notifications_router)
+        self.app.include_router(subs_router.video_router)
+        self.app.include_router(tags_router.router)
 
     def run(self) -> FastAPI:
         self.set_up()

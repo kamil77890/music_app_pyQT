@@ -38,7 +38,7 @@ def _load_project_dotenv() -> None:
 
 _load_project_dotenv()
 
-# Zgodne z domyślnym `download_path` w app/desktop/config.py (gdy brak FILEPATH w .env).
+# Default local library folder when FILEPATH is unset (same idea as a typical Music folder).
 _DEFAULT_LOCAL_SONGS_DIR = str(Path.home() / "Music" / "YT Music")
 
 

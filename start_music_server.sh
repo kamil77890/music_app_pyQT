@@ -1,9 +1,10 @@
-#!/bin/bash
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(dirname "$0")"
 
-cd /home/kamil/Documents/music-server || exit 1
-
-# activate venv
-source .venv/bin/activate
-
-# run app
-python run.py
+# Prefer uv if available; otherwise use the active venv's Python.
+if command -v uv >/dev/null 2>&1; then
+  exec uv run python run.py
+else
+  exec python run.py
+fi

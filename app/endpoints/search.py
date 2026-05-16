@@ -15,7 +15,15 @@ from app.logic.api_handler.handle_playlist_search import (
 router = APIRouter()
 
 
-@router.get("/search")
+@router.get(
+    "/search",
+    summary="Search songs (and authors on first page)",
+    description=(
+        "Returns `data` with songs, playlists metadata, optionally paginated playlists, "
+        "and up to five popular channel matches in `data.authors` "
+        "(empty when `pageToken` is set)."
+    ),
+)
 async def search_songs(
     q: str,
     pageToken: Optional[str] = None,

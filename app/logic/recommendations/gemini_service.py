@@ -1,17 +1,13 @@
 import json
 import re
-import os
 import logging
 
-import google.generativeai as genai
 from google.api_core.exceptions import ResourceExhausted
 
-from app.utils.music_utils import compact_json, extract_style_hint
+from app.logic.tags.gemini_client import generate_json
+from app.utils.music_utils import compact_json, extract_style_hint, song_key
 
 log = logging.getLogger(__name__)
-
-
-_MODEL = None
 
 
 SYSTEM_PROMPT = """
@@ -42,15 +38,15 @@ OUTPUT FORMAT (STRICT JSON ONLY):
 """
 
 
-def fallback(songs, max_results, existing_titles):
+def fallback(songs, max_results, existing_keys):
     artists = list({s.get("artist") for s in songs if s.get("artist")})
 
     recs = []
-    used = set(existing_titles)
+    used = set(existing_keys)
 
     for a in artists:
         candidate = f"Deep cut {a} track"
-        norm = candidate.lower()
+        norm = song_key({"title": candidate, "artist": a})
 
         if norm in used:
             continue
@@ -72,10 +68,6 @@ def fallback(songs, max_results, existing_titles):
 
 
 def build_exclusion_block(songs):
-    """
-    Builds a strict exclusion list for Gemini to avoid duplicates.
-    Includes title + artist normalization-safe format.
-    """
     seen = set()
     block = []
 
@@ -97,37 +89,21 @@ def build_exclusion_block(songs):
     return block
 
 
-def _get_model():
-    global _MODEL
-
-    key = os.environ.get("GEMINI_API_KEY", "").strip()
-    if not key:
-        raise RuntimeError("Missing GEMINI_API_KEY")
-
-    genai.configure(api_key=key)
-
-    _MODEL = genai.GenerativeModel(
-        model_name="gemini-2.5-flash-lite",
-        generation_config=genai.GenerationConfig(
-            response_mime_type="application/json",
-            temperature=0.25,
-        ),
-    )
-
-    return _MODEL
-
-
-
-async def ask_gemini(songs, existing_titles, max_results):
-    model = _get_model()
-
+async def ask_gemini(songs, existing_keys, max_results, tag_histogram: dict | None = None):
     style = extract_style_hint(songs)
-
     excluded = build_exclusion_block(songs)
+
+    tag_block = ""
+    if tag_histogram:
+        top = sorted(tag_histogram.items(), key=lambda x: -x[1])[:12]
+        tag_block = f"\nLIBRARY TAG PROFILE (top weights):\n{compact_json(dict(top))}\n"
 
     prompt = f"""
 {SYSTEM_PROMPT}
 
+STYLE HINT:
+{compact_json(style)}
+{tag_block}
 CRITICAL EXCLUSION LIST:
 You MUST NOT recommend ANY of these songs or variations of them:
 
@@ -140,38 +116,26 @@ RULE:
 - no reuploads of same track
 - no playlist/mix videos
 
-LIBRARY:
-{compact_json(songs)}
+LIBRARY (sample):
+{compact_json(songs[:80])}
 
-Return ONLY NEW songs similar in style.
+Return ONLY NEW songs similar in style. Up to {max_results} recommendations.
 """
 
     try:
-        res = await model.generate_content_async(prompt)
-        raw = (res.text or "").strip()
-
+        data = await generate_json(prompt, temperature=0.25)
     except ResourceExhausted:
         log.warning("Gemini quota exceeded → fallback")
-        return fallback(songs, max_results, existing_titles)
+        return fallback(songs, max_results, existing_keys)
 
-    except Exception as e:
-        log.warning(f"Gemini error: {e}")
-        return fallback(songs, max_results, existing_titles)
+    if not data or not isinstance(data, dict):
+        return fallback(songs, max_results, existing_keys)
 
-    raw = re.sub(r"^```[^\n]*\n?", "", raw)
-    raw = re.sub(r"\n?```$", "", raw)
-
-    try:
-        data = json.loads(raw)
-    except Exception:
-        return fallback(songs, max_results, existing_titles)
-
-    # 🔥 HARD FILTER DUPLICATES HERE (IMPORTANT FIX)
-    seen = set(existing_titles)
+    seen = set(existing_keys)
     filtered = []
 
     for r in data.get("recommendations", []):
-        key = f"{r.get('title','').lower()}_{r.get('artist','').lower()}"
+        key = song_key(r)
 
         if key in seen:
             continue

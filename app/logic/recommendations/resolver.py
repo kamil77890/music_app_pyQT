@@ -1,6 +1,8 @@
 import asyncio
 import yt_dlp
 
+from app.utils.music_utils import song_key
+
 
 _YTDLP_OPTS = {
     "quiet": True,
@@ -40,7 +42,7 @@ def _resolve_sync(title, artist):
         return None
 
 
-async def resolve_many(recs, max_results, existing_titles, existing_ids):
+async def resolve_many(recs, max_results, existing_keys, existing_ids):
     sem = asyncio.Semaphore(8)
     results = []
 
@@ -56,9 +58,16 @@ async def resolve_many(recs, max_results, existing_titles, existing_ids):
 
     for t in asyncio.as_completed(tasks):
         song = await t
-        if song:
-            results.append(song)
-            if len(results) >= max_results:
-                break
+        if not song:
+            continue
+        vid = song.get("videoId")
+        if vid and vid in existing_ids:
+            continue
+        key = song_key(song)
+        if key and key in existing_keys:
+            continue
+        results.append(song)
+        if len(results) >= max_results:
+            break
 
     return results
