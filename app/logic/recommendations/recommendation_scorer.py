@@ -22,6 +22,17 @@ _FOCUS_SOURCE_ORDER = {
     TOP_TITLE_NEWEST_SOURCE: 4,
 }
 
+_HIGH_TRUST = frozenset({
+    TOP_ARTIST_POPULAR_SOURCE,
+    TOP_ARTIST_NEWEST_SOURCE,
+    TOP_TITLE_POPULAR_SOURCE,
+    TOP_TITLE_NEWEST_SOURCE,
+    "subscription_feed",
+    "notification",
+    "oauth_music_liked",
+    "oauth_similar",
+})
+
 
 def _jaccard(a: set[str], b: set[str]) -> float:
     if not a or not b:
@@ -44,9 +55,7 @@ def _recency_score(published_at: str, profile: dict[str, Any]) -> float:
         return 0.5
     era_weights = profile.get("by_dimension", {}).get("era", {})
     if not era_weights:
-        if year >= 2015:
-            return 0.8
-        return 0.5
+        return 0.8 if year >= 2015 else 0.5
     era_map = {
         "pre_80s": 1970, "80s": 1985, "90s": 1995,
         "2000s": 2005, "2010s": 2015, "2020s": 2022,
@@ -83,8 +92,7 @@ def _library_title_match_boost(library_title: str, candidate_title: str) -> floa
     wa, wb = set(nt.split()), set(nct.split())
     if not wa:
         return 0.0
-    overlap = len(wa & wb) / len(wa)
-    return 0.35 * min(1.0, overlap)
+    return 0.35 * min(1.0, len(wa & wb) / len(wa))
 
 
 def _interest_terms_in_title(profile: dict[str, Any], title: str) -> float:
@@ -109,6 +117,61 @@ def _interest_terms_in_title(profile: dict[str, Any], title: str) -> float:
     return min(1.0, hits * 0.15)
 
 
+def _behavioral_affinity(candidate: dict[str, Any], profile: dict[str, Any]) -> float:
+    behavioral = profile.get("behavioral") or {}
+    vid = candidate.get("videoId")
+    channel = candidate.get("channelId") or ""
+    artist = (candidate.get("artist") or "").lower()
+
+    score = 0.0
+    for v in behavioral.get("top_videos", []):
+        if v.get("video_id") == vid:
+            plays = v.get("play_count", 0)
+            completes = v.get("complete_count", 0)
+            ratio = v.get("avg_listen_ratio", 0)
+            score = min(1.0, plays * 0.15 + completes * 0.25 + ratio * 0.4)
+            break
+
+    for ch in behavioral.get("top_channels", []):
+        if ch.get("channel_id") == channel:
+            score = max(score, min(1.0, ch.get("play_count", 0) * 0.1))
+            break
+
+    for a in behavioral.get("top_artists", []):
+        if (a.get("artist") or "").lower() == artist:
+            score = max(score, min(1.0, a.get("play_count", 0) * 0.12))
+            break
+
+    return score
+
+
+def _negative_penalty(candidate: dict[str, Any], profile: dict[str, Any]) -> float:
+    negative = profile.get("negative") or {}
+    vid = candidate.get("videoId")
+    channel = candidate.get("channelId") or ""
+    artist = (candidate.get("artist") or "").lower()
+
+    penalty = 0.0
+    if vid in set(negative.get("disliked_video_ids", [])):
+        penalty += 0.5
+    if channel in set(negative.get("hidden_channels", [])):
+        penalty += 0.6
+    for entry in negative.get("disliked_artists", []):
+        if (entry.get("artist") or "").lower() == artist:
+            penalty += min(0.4, entry.get("count", 1) * 0.1)
+    return min(0.6, penalty)
+
+
+def _subscription_boost(candidate: dict[str, Any], profile: dict[str, Any]) -> float:
+    weights = profile.get("channel_weights") or {}
+    cid = candidate.get("channelId")
+    if cid and cid in weights:
+        return min(1.0, weights[cid])
+    if candidate.get("source") in ("subscription_feed", "notification"):
+        return 0.85
+    return 0.0
+
+
 def score_candidate(
     candidate: dict[str, Any],
     profile: dict[str, Any],
@@ -120,8 +183,7 @@ def score_candidate(
         cand_tags |= set(candidate["matchedTags"])
 
     tag_overlap = _jaccard(profile_tags, cand_tags) if cand_tags else 0.25
-    interest_hint = _interest_terms_in_title(profile, candidate.get("title", ""))
-    tag_overlap = min(1.0, tag_overlap + interest_hint)
+    tag_overlap = min(1.0, tag_overlap + _interest_terms_in_title(profile, candidate.get("title", "")))
 
     lt_focus = (candidate.get("library_title_focus") or "").strip()
     if lt_focus:
@@ -140,37 +202,72 @@ def score_candidate(
     elif channel and channel not in library_artists:
         artist_fit = 1.0
     else:
-        artist_fit = 0.35
+        top_weights = {
+            (e.get("artist") or "").lower(): e.get("weight", 0)
+            for e in profile.get("top_artists", [])
+        }
+        artist_fit = 0.35 + min(0.65, top_weights.get(channel, 0) * 2)
 
     source = candidate.get("source", "")
-    high_trust = {
-        TOP_ARTIST_POPULAR_SOURCE,
-        TOP_ARTIST_NEWEST_SOURCE,
-        TOP_TITLE_POPULAR_SOURCE,
-        TOP_TITLE_NEWEST_SOURCE,
-    }
-    if source in high_trust:
+    if source in _HIGH_TRUST:
         source_fit = 1.0
     elif source == TOP_ARTIST_EXPLORE_SUFFIX_SOURCE:
         source_fit = 0.92
-    elif source == YT_EXPLORE_SOURCE:
+    elif source == YT_EXPLORE_SOURCE or source == "gemini_query":
         source_fit = 0.65
+    elif source.startswith("oauth_"):
+        source_fit = 0.95
     else:
         source_fit = 0.55
 
     views = int(candidate.get("viewCount") or 0)
     engagement = _log_views(views)
+    like_ratio = float(candidate.get("likeRatio") or 0)
+    if like_ratio > 0:
+        engagement = min(1.0, engagement * 0.7 + min(1.0, like_ratio * 1000) * 0.3)
 
     recency = _recency_score(candidate.get("publishedAt", ""), profile)
+    behavioral = _behavioral_affinity(candidate, profile)
+    sub_boost = _subscription_boost(candidate, profile)
+    penalty = _negative_penalty(candidate, profile)
 
-    score = (
-        tag_overlap * 30.0
-        + artist_fit * 25.0
-        + source_fit * 20.0
-        + engagement * 15.0
-        + recency * 10.0
+    freshness = 0.5
+    pub = candidate.get("publishedAt") or ""
+    if pub:
+        try:
+            year = int(pub[:4])
+            if year >= 2023:
+                freshness = 0.9
+            elif year >= 2018:
+                freshness = 0.7
+        except (ValueError, TypeError):
+            pass
+
+    music_boost = float(candidate.get("musicScore") or 0) * 12.0
+    if candidate.get("categoryId") == "10":
+        music_boost = max(music_boost, 8.0)
+
+    lib_artist_names = {
+        (e.get("artist") or "").lower()
+        for e in profile.get("top_artists", [])
+        if e.get("from_library")
+    }
+    if channel in lib_artist_names or focus in lib_artist_names:
+        artist_fit = min(1.0, artist_fit + 0.25)
+
+    raw = (
+        tag_overlap * 22.0
+        + artist_fit * 22.0
+        + behavioral * 18.0
+        + source_fit * 10.0
+        + engagement * 8.0
+        + recency * 8.0
+        + sub_boost * 5.0
+        + freshness * 5.0
+        + music_boost
+        - penalty * 15.0
     )
-    return round(min(100.0, score), 2)
+    return round(max(0.0, min(100.0, raw)), 2)
 
 
 def rank_candidates(

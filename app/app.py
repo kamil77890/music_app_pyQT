@@ -24,15 +24,32 @@ from app.endpoints import (
     video_url,
     register,
     playlists,
-    recommendations
+    recommendations,
+    events,
 )
 from app.endpoints import cloud as cloud_router
 from app.endpoints import subscriptions as subs_router
 from app.endpoints import tags as tags_router
+from app.endpoints import youtube_auth as yt_auth_router
 
 log = logging.getLogger(__name__)
 
 POLL_INTERVAL_SECONDS = 1800
+OAUTH_IMPORT_INTERVAL_SECONDS = 86400
+
+
+def _oauth_import_loop() -> None:
+    from app.db import oauth_repository
+    from app.logic.youtube_import.importer import run_import
+
+    while True:
+        time.sleep(OAUTH_IMPORT_INTERVAL_SECONDS)
+        if not oauth_repository.is_connected():
+            continue
+        try:
+            run_import()
+        except Exception:
+            log.exception("YouTube OAuth import failed")
 
 
 def _polling_loop() -> None:
@@ -55,6 +72,10 @@ async def lifespan(app: FastAPI):
         target=_polling_loop, daemon=True, name="subscription-poller"
     )
     thread.start()
+    oauth_thread = threading.Thread(
+        target=_oauth_import_loop, daemon=True, name="youtube-oauth-import"
+    )
+    oauth_thread.start()
     yield
 
 
@@ -99,6 +120,8 @@ class Application:
         self.app.include_router(subs_router.notifications_router)
         self.app.include_router(subs_router.video_router)
         self.app.include_router(tags_router.router)
+        self.app.include_router(events.router)
+        self.app.include_router(yt_auth_router.router)
 
     def run(self) -> FastAPI:
         self.set_up()

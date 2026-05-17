@@ -72,23 +72,72 @@ def search_related_videos(
     max_results: int = 5,
     page_token: str | None = None,
 ) -> tuple[list[dict[str, Any]], str | None]:
+    """
+    YouTube removed relatedToVideoId (Aug 2023). Fallback: search by seed
+    video channel + title keywords, and same-channel recent uploads.
+    """
     youtube = create_youtube_service()
-    req: dict[str, Any] = {
-        "relatedToVideoId": video_id,
-        "part": "snippet",
-        "type": "video",
-        "maxResults": min(max_results, 50),
-    }
-    if page_token:
-        req["pageToken"] = page_token
-    resp = youtube.search().list(**req).execute()
-    results = []
-    for item in resp.get("items", []):
-        c = _snippet_to_candidate(item, "related")
-        if c:
+    enriched = enrich_videos([video_id])
+    meta = enriched.get(video_id, {})
+    channel_id = meta.get("channelId", "")
+    channel_title = (meta.get("artist") or "").strip()
+    title = (meta.get("title") or "").strip()
+
+    results: list[dict[str, Any]] = []
+    seen: set[str] = {video_id}
+    next_token: str | None = None
+
+    if channel_id and not page_token:
+        ch_req: dict[str, Any] = {
+            "channelId": channel_id,
+            "part": "snippet",
+            "type": "video",
+            "order": "relevance",
+            "maxResults": min(max_results, 50),
+        }
+        ch_resp = youtube.search().list(**ch_req).execute()
+        for item in ch_resp.get("items", []):
+            c = _snippet_to_candidate(item, "related")
+            if not c:
+                continue
+            vid = c.get("videoId")
+            if vid in seen:
+                continue
+            seen.add(vid)
             c["seedVideoId"] = video_id
+            c["reason"] = f"More from {channel_title or 'same channel'}"
             results.append(c)
-    return results, resp.get("nextPageToken")
+        next_token = ch_resp.get("nextPageToken")
+
+    if len(results) < max_results:
+        query_parts = []
+        if channel_title:
+            query_parts.append(f'"{channel_title}"')
+        if title:
+            short = title[:60].replace('"', "")
+            query_parts.append(short)
+        query_parts.append("music")
+        q = " ".join(query_parts).strip()
+        if q:
+            rows, tok = search_by_query(
+                q,
+                max(max_results - len(results), 5),
+                order="relevance",
+                page_token=page_token,
+            )
+            for c in rows:
+                vid = c.get("videoId")
+                if not vid or vid in seen:
+                    continue
+                seen.add(vid)
+                c["source"] = "related"
+                c["seedVideoId"] = video_id
+                c["reason"] = f"Similar to {title[:40]}" if title else "Related search"
+                results.append(c)
+            if tok:
+                next_token = tok
+
+    return results[:max_results], next_token
 
 
 def search_related_videos_simple(video_id: str, max_results: int = 5) -> list[dict[str, Any]]:
@@ -119,6 +168,7 @@ def enrich_videos(video_ids: list[str]) -> dict[str, dict[str, Any]]:
                 "viewCount": int(stats.get("viewCount", 0) or 0),
                 "title": snippet.get("title", ""),
                 "artist": snippet.get("channelTitle", ""),
+                "channelId": snippet.get("channelId", ""),
                 "publishedAt": snippet.get("publishedAt", ""),
             }
     return enriched
@@ -415,11 +465,14 @@ def build_tag_search_queries(profile: dict[str, Any], count: int = 4) -> list[st
             elif dim == "mood":
                 queries.append(f"{label} chill music")
 
-    for entry in profile.get("top_artists", [])[:6]:
+    for entry in profile.get("top_artists", [])[:8]:
+        if not entry.get("from_library") and entry.get("song_count", 0) <= 0:
+            continue
         a = (entry.get("artist") or "").strip().replace('"', "").replace("\\", "")
-        if a:
-            queries.append(f'"{a}" official audio')
-            queries.append(f"{a} full album")
+        if not a or a.lower() in ("unknown artist", "unknown"):
+            continue
+        queries.append(f'"{a}" official audio')
+        queries.append(f"{a} nightcore" if "nightcore" in str(profile.get("tag_histogram", {})).lower() else f"{a} songs")
 
     for entry in profile.get("top_titles", [])[:6]:
         t = _clean_title_for_query((entry.get("title") or "").strip())
