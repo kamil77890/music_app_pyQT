@@ -35,3 +35,9 @@ ffmpeg.exe
 
 # Logs
 *.log
+
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+database.db
