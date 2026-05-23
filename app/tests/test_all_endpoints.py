@@ -175,7 +175,7 @@ class TestSubscriptions:
         assert isinstance(data, (dict, list))
 
     def test_notifications(self, server_up):
-        data = _ok_or_expected(_get("/subscriptions/notifications"), {200})
+        data = _ok_or_expected(_get("/notifications"), {200})
         assert isinstance(data, (dict, list))
 
 
