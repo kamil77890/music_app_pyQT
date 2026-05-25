@@ -1,7 +1,9 @@
 import json
+import logging
 from pathlib import Path
 from app.config.stałe import Parameters
 
+log = logging.getLogger(__name__)
 
 _CACHE = {"path": None, "mtime": None, "songs": []}
 
@@ -14,7 +16,21 @@ def load_playlist():
     path = get_playlist_path()
 
     if not path.is_file():
-        return []
+        log.info("playlist.json missing — running library scan fallback")
+        try:
+            from app.logic.library_scanner import ensure_playlist_and_db
+            data = ensure_playlist_and_db()
+            songs = data.get("songs", [])
+            if path.is_file():
+                _CACHE.update({
+                    "path": str(path),
+                    "mtime": path.stat().st_mtime,
+                    "songs": songs,
+                })
+            return songs
+        except Exception:
+            log.exception("Library scan fallback failed")
+            return []
 
     mtime = path.stat().st_mtime
 

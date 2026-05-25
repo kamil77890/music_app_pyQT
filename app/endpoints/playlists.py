@@ -70,20 +70,24 @@ def _deduplicate_songs(data: dict) -> dict:
 
 @router.get("/playlists/all-songs")
 def get_all_songs_playlist():
-    """Zwraca całą zawartość pliku playlist.json z folderu 'All Songs' z usuniętymi duplikatami."""
+    """Zwraca zawartość playlist.json z folderu 'All Songs'.
+
+    Jeśli plik nie istnieje, skanuje katalog z muzyką, tworzy playlist.json
+    i synchronizuje znalezione utwory z bazą danych.
+    """
+    from app.logic.library_scanner import ensure_playlist_and_db
+
     download_dir = Parameters.get_download_dir()
     playlist_folder = os.path.join(download_dir, "All Songs")
     playlist_file = os.path.join(playlist_folder, "playlist.json")
 
-    if not os.path.isfile(playlist_file):
-        raise HTTPException(
-            status_code=404,
-            detail=f"Playlist 'All Songs' nie istnieje: {playlist_file}"
-        )
-
     try:
-        with open(playlist_file, "r", encoding="utf-8") as f:
-            data = json.load(f)
+        if os.path.isfile(playlist_file):
+            with open(playlist_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        else:
+            log.info("playlist.json nie istnieje — uruchamiam skan plików…")
+            data = ensure_playlist_and_db()
 
         data = _deduplicate_songs(data)
         return data
@@ -99,3 +103,22 @@ def get_all_songs_playlist():
             status_code=500,
             detail=f"Nie można odczytać playlist.json: {str(e)}"
         )
+
+
+@router.post("/playlists/rescan")
+def rescan_library():
+    """Wymuś ponowny skan katalogu z muzyką.
+
+    Nadpisuje istniejący playlist.json i synchronizuje nowe utwory z DB.
+    """
+    from app.logic.library_scanner import scan_music_files, build_and_save_playlist, sync_songs_to_db
+
+    songs = scan_music_files()
+    data = build_and_save_playlist(songs)
+    inserted = sync_songs_to_db(songs)
+
+    return {
+        "scanned": len(songs),
+        "inserted_to_db": inserted,
+        "playlist_path": str(Parameters.get_download_dir() + "/All Songs/playlist.json"),
+    }
