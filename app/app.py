@@ -26,6 +26,7 @@ from app.endpoints import (
     playlists,
     recommendations,
     events,
+    upload,
 )
 from app.endpoints import cloud as cloud_router
 from app.endpoints import subscriptions as subs_router
@@ -122,6 +123,7 @@ class Application:
         self.app.include_router(tags_router.router)
         self.app.include_router(events.router)
         self.app.include_router(yt_auth_router.router)
+        self.app.include_router(upload.router)
 
     def run(self) -> FastAPI:
         self.set_up()
