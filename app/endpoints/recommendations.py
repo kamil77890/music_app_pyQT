@@ -118,6 +118,29 @@ async def get_advanced_recommendations(
     return {"success": True, **result}
 
 
+@router.get("/recommendations/feed")
+async def get_recommendation_feed(limit: int = Query(50, ge=1, le=200)):
+    """Instant, pre-computed recommendations gathered by the background service."""
+    from app.logic.recommendations.recommendation_feed import get_feed
+
+    feed = get_feed(limit=limit)
+    return {"success": True, **feed}
+
+
+@router.post("/recommendations/feed/refresh")
+async def refresh_recommendation_feed(
+    max_results: int = Query(25, ge=1, le=50),
+    mode: Mode = Query("discover"),
+):
+    """Manually trigger a discovery pass that adds new items to the feed."""
+    from app.logic.recommendations.recommendation_feed import refresh_feed
+
+    try:
+        return {"success": True, **await refresh_feed(max_results=max_results, mode=mode)}
+    except (YouTubeQuotaExceededError, YouTubeAccessDeniedError, YouTubeNotFoundError, YouTubeAPIError) as e:
+        _raise_youtube_error(e)
+
+
 @router.get("/recommendations/profile")
 async def get_recommendations_profile():
     songs = load_playlist()

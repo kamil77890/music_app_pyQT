@@ -24,6 +24,22 @@ async def get_vocabulary():
     return get_vocabulary_by_dimension()
 
 
+@router.get("/status")
+async def get_tagging_status():
+    """How much of the library is already tagged (auto-tagger progress)."""
+    from app.logic.tags.auto_tagger import tagging_status
+
+    return tagging_status()
+
+
+@router.post("/auto/run")
+async def run_auto_tag(batch_limit: int = 12):
+    """Trigger one incremental tagging pass over not-yet-tagged songs."""
+    from app.logic.tags.auto_tagger import run_auto_tag_pass
+
+    return await run_auto_tag_pass(batch_limit=batch_limit)
+
+
 @router.get("/song/{video_id}")
 async def get_song_tags(video_id: str):
     try:

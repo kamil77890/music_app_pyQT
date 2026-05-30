@@ -1,4 +1,5 @@
 import logging
+import os
 import threading
 import time
 from contextlib import asynccontextmanager
@@ -39,6 +40,16 @@ log = logging.getLogger(__name__)
 POLL_INTERVAL_SECONDS = 1800
 OAUTH_IMPORT_INTERVAL_SECONDS = 86400
 
+# Background auto-tagging: keep the library as fully tagged as possible.
+AUTO_TAG_ENABLED = os.environ.get("AUTO_TAG_ENABLED", "1") == "1"
+AUTO_TAG_INTERVAL_SECONDS = int(os.environ.get("AUTO_TAG_INTERVAL_SECONDS", "1200"))  # 20 min
+AUTO_TAG_BATCH = int(os.environ.get("AUTO_TAG_BATCH", "12"))
+
+# Background recommendation discovery feed.
+REC_FEED_ENABLED = os.environ.get("RECOMMENDATION_FEED_ENABLED", "1") == "1"
+REC_FEED_INTERVAL_SECONDS = int(os.environ.get("RECOMMENDATION_FEED_INTERVAL_SECONDS", "21600"))  # 6h
+REC_FEED_START_DELAY_SECONDS = int(os.environ.get("RECOMMENDATION_FEED_START_DELAY_SECONDS", "120"))
+
 
 def _oauth_import_loop() -> None:
     from app.db import oauth_repository
@@ -63,6 +74,33 @@ def _polling_loop() -> None:
         time.sleep(POLL_INTERVAL_SECONDS)
 
 
+def _auto_tag_loop() -> None:
+    import asyncio as _asyncio
+    from app.logic.tags.auto_tagger import run_auto_tag_pass
+
+    # Small initial delay so startup isn't blocked.
+    time.sleep(30)
+    while True:
+        try:
+            _asyncio.run(run_auto_tag_pass(batch_limit=AUTO_TAG_BATCH))
+        except Exception:
+            log.exception("Auto-tag pass failed")
+        time.sleep(AUTO_TAG_INTERVAL_SECONDS)
+
+
+def _recommendation_feed_loop() -> None:
+    import asyncio as _asyncio
+    from app.logic.recommendations.recommendation_feed import refresh_feed
+
+    time.sleep(REC_FEED_START_DELAY_SECONDS)
+    while True:
+        try:
+            _asyncio.run(refresh_feed())
+        except Exception:
+            log.exception("Recommendation feed refresh failed")
+        time.sleep(REC_FEED_INTERVAL_SECONDS)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
@@ -78,6 +116,14 @@ async def lifespan(app: FastAPI):
         target=_oauth_import_loop, daemon=True, name="youtube-oauth-import"
     )
     oauth_thread.start()
+    if AUTO_TAG_ENABLED:
+        threading.Thread(
+            target=_auto_tag_loop, daemon=True, name="auto-tagger"
+        ).start()
+    if REC_FEED_ENABLED:
+        threading.Thread(
+            target=_recommendation_feed_loop, daemon=True, name="recommendation-feed"
+        ).start()
     yield
 
 
