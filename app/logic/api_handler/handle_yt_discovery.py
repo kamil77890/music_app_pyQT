@@ -287,12 +287,10 @@ def discover_from_library_top_artists(
             take_ordered(artist, "date", primary_newest, TOP_ARTIST_NEWEST_SOURCE, rank)
             safe_primary = artist.replace('"', "").replace("\\", "").strip()
             if safe_primary:
+                # Fewer suffix searches keeps per-request quota + latency down.
                 for suf in (
                     " official audio",
                     " lyrics",
-                    " remix",
-                    " slowed reverb",
-                    " cover acoustic",
                 ):
                     q = f'"{safe_primary}"{suf}'
                     order = random.choice(("relevance", "viewCount", "date"))
@@ -483,7 +481,16 @@ def build_tag_search_queries(profile: dict[str, Any], count: int = 4) -> list[st
             queries.append(f'"{t}" music video')
 
     if not queries:
-        queries.append("trending music")
+        # Derive a fallback from the profile instead of a fixed term.
+        top_tag = (profile.get("top_tags") or [{}])[0].get("tag", "")
+        top_artist = ""
+        for e in profile.get("top_artists", []):
+            if e.get("artist"):
+                top_artist = e["artist"]
+                break
+        derived = " ".join(p for p in (top_artist, top_tag.replace("_", " ")) if p).strip()
+        if derived:
+            queries.append(f"{derived} music")
 
     seen: set[str] = set()
     out: list[str] = []

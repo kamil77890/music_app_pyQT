@@ -27,6 +27,7 @@ from app.endpoints import (
     recommendations,
     events,
     upload,
+    library_repair,
 )
 from app.endpoints import cloud as cloud_router
 from app.endpoints import subscriptions as subs_router
@@ -124,6 +125,7 @@ class Application:
         self.app.include_router(events.router)
         self.app.include_router(yt_auth_router.router)
         self.app.include_router(upload.router)
+        self.app.include_router(library_repair.router)
 
     def run(self) -> FastAPI:
         self.set_up()

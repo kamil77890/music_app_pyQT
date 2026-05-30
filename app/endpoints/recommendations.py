@@ -78,6 +78,8 @@ async def get_recommendations(
         "success": True,
         "request_id": result.get("request_id"),
         "profile": profile,
+        "confidence": result.get("confidence"),
+        "low_confidence": result.get("low_confidence"),
         "data": {
             "songs": resolved,
             "playlist": [],

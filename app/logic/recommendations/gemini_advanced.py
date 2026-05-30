@@ -55,25 +55,25 @@ async def ask_gemini_advanced(
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     style = extract_style_hint(songs)
     exclusions = []
-    for s in songs[:200]:
+    for s in songs[:80]:
         t = (s.get("title") or "").strip()
         a = (s.get("artist") or "").strip()
         if t and a:
             exclusions.append(f"{t} - {a}")
 
     compact_profile = {
-        "top_tags": taste_profile.get("top_tags", [])[:10],
-        "top_artists": taste_profile.get("top_artists", [])[:8],
-        "top_titles": taste_profile.get("top_titles", [])[:12],
+        "top_tags": taste_profile.get("top_tags", [])[:8],
+        "top_artists": taste_profile.get("top_artists", [])[:6],
+        "top_titles": taste_profile.get("top_titles", [])[:8],
         "energy_avg": taste_profile.get("energy_avg"),
-        "top_eras": taste_profile.get("top_eras", [])[:5],
+        "top_eras": taste_profile.get("top_eras", [])[:4],
     }
 
     prompt = ADVANCED_PROMPT.format(
         vocabulary=format_vocabulary_for_prompt(),
         profile=compact_json(compact_profile),
         style_hint=compact_json(style),
-        exclusions=compact_json(exclusions[:300]),
+        exclusions=compact_json(exclusions[:80]),
     )
 
     data = await generate_json(prompt, temperature=0.3)

@@ -214,3 +214,40 @@ def download_song_mp3(
         download_subs=download_subs,
         noplaylist=True,
     )
+
+
+def fetch_metadata(video_id: str) -> Optional[dict[str, Any]]:
+    """Fetch title/artist/thumbnail for a video WITHOUT downloading it.
+
+    Uses yt-dlp extraction, which does not consume YouTube Data API quota.
+    Returns ``None`` if the video can't be resolved.
+    """
+    if not video_id:
+        return None
+    url = f"https://www.youtube.com/watch?v={video_id}"
+    opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "skip_download": True,
+        "noplaylist": True,
+        "nocheckcertificate": True,
+        "http_headers": {"User-Agent": "Mozilla/5.0"},
+    }
+    cookie_file = _find_cookie_file()
+    if cookie_file:
+        opts["cookiefile"] = cookie_file
+    try:
+        with YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+    except Exception as exc:
+        log.warning("fetch_metadata failed for %s: %s", video_id, exc)
+        return None
+    if not info:
+        return None
+    return {
+        "id": info.get("id", video_id),
+        "title": _best_title(info),
+        "artist": _best_artist(info),
+        "thumbnail": _best_thumbnail(info),
+        "duration": info.get("duration"),
+    }

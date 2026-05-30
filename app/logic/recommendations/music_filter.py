@@ -19,8 +19,7 @@ _NON_MUSIC_TITLE = re.compile(
 _MUSIC_TITLE = re.compile(
     r"\b("
     r"nightcore|lyrics|official|audio|mv\b|amv|cover|remix|ft\.|feat\.|"
-    r"song|music|ost\b|soundtrack|album|single|ep\b|"
-    r"maneskin|linkin\s*park|anime\s*mix"
+    r"song|music|ost\b|soundtrack|album|single|ep\b"
     r")\b",
     re.I,
 )
@@ -37,8 +36,13 @@ def music_likelihood(
     category_id: str | None = None,
     tags: list[str] | None = None,
     channel_title: str = "",
+    known_artists: set[str] | None = None,
 ) -> float:
-    """0..1 — how likely this is a music video."""
+    """0..1 — how likely this is a music video.
+
+    ``known_artists`` (lowercased) are the user's own library artists; matching
+    one is a strong music signal, replacing any hardcoded artist names.
+    """
     t = title or ""
     if category_id == _MUSIC_CATEGORY:
         return 0.95
@@ -47,6 +51,10 @@ def music_likelihood(
     score = 0.35
     if _MUSIC_TITLE.search(t):
         score += 0.45
+    if known_artists:
+        hay = f"{t} {channel_title}".lower()
+        if any(a and a in hay for a in known_artists):
+            score += 0.4
     if tags:
         tag_str = " ".join(str(x) for x in tags).lower()
         if _TOPIC_MUSIC.search(tag_str):
@@ -65,6 +73,7 @@ def is_likely_music(
     category_id: str | None = None,
     tags: list[str] | None = None,
     channel_title: str = "",
+    known_artists: set[str] | None = None,
     min_score: float = 0.42,
 ) -> bool:
     return music_likelihood(
@@ -72,6 +81,7 @@ def is_likely_music(
         category_id=category_id,
         tags=tags,
         channel_title=channel_title,
+        known_artists=known_artists,
     ) >= min_score
 
 
@@ -79,6 +89,7 @@ def filter_music_candidates(
     candidates: list[dict[str, Any]],
     *,
     min_score: float = 0.42,
+    known_artists: set[str] | None = None,
 ) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for c in candidates:
@@ -87,6 +98,7 @@ def filter_music_candidates(
             category_id=c.get("categoryId"),
             tags=c.get("matchedTags") or c.get("tags"),
             channel_title=c.get("artist", ""),
+            known_artists=known_artists,
             min_score=min_score,
         ):
             c = dict(c)
@@ -96,6 +108,7 @@ def filter_music_candidates(
                     category_id=c.get("categoryId"),
                     tags=c.get("matchedTags") or c.get("tags"),
                     channel_title=c.get("artist", ""),
+                    known_artists=known_artists,
                 ),
                 3,
             )

@@ -3,7 +3,9 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import time
 from typing import Any
+
 from app.db import subscription_repository as store
 from app.logic.api_handler.handle_yt_service import create_youtube_service
 from app.utils.youtube_error_handler import youtube_api_error_handler
@@ -12,17 +14,30 @@ log = logging.getLogger(__name__)
 
 VIDEOS_PER_CHANNEL = 5
 
+# Uploads playlist id for a channel never changes -> cache for the process life.
+_uploads_playlist_cache: dict[str, str] = {}
 
-def _search_item_to_feed_item(item: dict[str, Any]) -> dict[str, Any]:
+# Short-lived cache of fetched uploads so /feed and the poller don't re-hit the API.
+_FEED_CACHE_TTL = 900  # 15 minutes
+_channel_videos_cache: dict[str, tuple[float, list[dict[str, Any]]]] = {}
+
+
+def _playlist_item_to_feed_item(item: dict[str, Any]) -> dict[str, Any]:
     snippet = item.get("snippet", {})
-    video_id = item.get("id", {}).get("videoId", "")
-    channel_id = snippet.get("channelId", "")
+    resource = snippet.get("resourceId", {})
+    video_id = resource.get("videoId", "")
+    thumbs = snippet.get("thumbnails", {}) or {}
+    cover = (
+        thumbs.get("maxres", {}).get("url")
+        or thumbs.get("high", {}).get("url")
+        or f"https://i.ytimg.com/vi/{video_id}/maxresdefault.jpg"
+    )
     return {
         "videoId": video_id,
         "title": snippet.get("title", ""),
-        "channelId": channel_id,
-        "channelTitle": snippet.get("channelTitle", ""),
-        "cover": f"https://i.ytimg.com/vi/{video_id}/maxresdefault.jpg",
+        "channelId": snippet.get("channelId", "") or snippet.get("videoOwnerChannelId", ""),
+        "channelTitle": snippet.get("channelTitle", "") or snippet.get("videoOwnerChannelTitle", ""),
+        "cover": cover,
         "publishedAt": snippet.get("publishedAt", ""),
         "duration": 0,
         "views": "",
@@ -30,17 +45,55 @@ def _search_item_to_feed_item(item: dict[str, Any]) -> dict[str, Any]:
 
 
 @youtube_api_error_handler
-def fetch_channel_videos(channel_id: str, max_results: int = VIDEOS_PER_CHANNEL) -> list[dict[str, Any]]:
+def _resolve_uploads_playlists(channel_ids: list[str]) -> dict[str, str]:
+    """Map channelId -> uploads playlist id (1 quota unit per 50 channels)."""
+    missing = [c for c in channel_ids if c and c not in _uploads_playlist_cache]
     youtube = create_youtube_service()
-    resp = youtube.search().list(
-        channelId=channel_id,
-        order="date",
-        type="video",
+    for i in range(0, len(missing), 50):
+        chunk = missing[i : i + 50]
+        resp = youtube.channels().list(
+            part="contentDetails",
+            id=",".join(chunk),
+            maxResults=50,
+        ).execute()
+        for item in resp.get("items", []):
+            cid = item.get("id")
+            uploads = (
+                item.get("contentDetails", {})
+                .get("relatedPlaylists", {})
+                .get("uploads")
+            )
+            if cid and uploads:
+                _uploads_playlist_cache[cid] = uploads
+    return {c: _uploads_playlist_cache[c] for c in channel_ids if c in _uploads_playlist_cache}
+
+
+@youtube_api_error_handler
+def fetch_channel_videos(
+    channel_id: str, max_results: int = VIDEOS_PER_CHANNEL
+) -> list[dict[str, Any]]:
+    """Recent uploads for a channel via the cheap uploads playlist (1 unit)."""
+    cached = _channel_videos_cache.get(channel_id)
+    if cached and time.time() - cached[0] < _FEED_CACHE_TTL:
+        return cached[1][:max_results]
+
+    uploads = _resolve_uploads_playlists([channel_id]).get(channel_id)
+    if not uploads:
+        return []
+
+    youtube = create_youtube_service()
+    resp = youtube.playlistItems().list(
         part="snippet",
-        maxResults=max_results,
+        playlistId=uploads,
+        maxResults=min(max_results, 50),
     ).execute()
-    items = resp.get("items", [])
-    return [_search_item_to_feed_item(item) for item in items if item.get("id", {}).get("videoId")]
+    items = [
+        _playlist_item_to_feed_item(it)
+        for it in resp.get("items", [])
+        if it.get("snippet", {}).get("resourceId", {}).get("videoId")
+    ]
+    _channel_videos_cache[channel_id] = (time.time(), items)
+    return items[:max_results]
 
 
 def process_new_videos(videos: list[dict[str, Any]]) -> int:
@@ -61,6 +114,22 @@ def _encode_page_token(offset: int) -> str:
     return base64.urlsafe_b64encode(json.dumps({"offset": offset}).encode()).decode()
 
 
+def _collect_all_uploads(
+    subscriptions: list[dict[str, Any]], per_channel: int
+) -> list[dict[str, Any]]:
+    """Fetch uploads for every subscription, warming the playlist-id cache once."""
+    channel_ids = [s.get("channelId") for s in subscriptions if s.get("channelId")]
+    _resolve_uploads_playlists(channel_ids)  # one batched channels.list
+
+    all_videos: list[dict[str, Any]] = []
+    for cid in channel_ids:
+        try:
+            all_videos.extend(fetch_channel_videos(cid, per_channel))
+        except Exception:
+            log.exception("Failed to fetch uploads for channel %s", cid)
+    return all_videos
+
+
 def build_subscription_feed(
     max_results: int = 20,
     page_token: str | None = None,
@@ -69,17 +138,7 @@ def build_subscription_feed(
     if not subscriptions:
         return {"items": [], "nextPageToken": None}
 
-    all_videos: list[dict[str, Any]] = []
-    for sub in subscriptions:
-        channel_id = sub.get("channelId")
-        if not channel_id:
-            continue
-        try:
-            all_videos.extend(fetch_channel_videos(channel_id, VIDEOS_PER_CHANNEL))
-        except Exception:
-            log.exception("Failed to fetch feed for channel %s", channel_id)
-            raise
-
+    all_videos = _collect_all_uploads(subscriptions, VIDEOS_PER_CHANNEL)
     all_videos.sort(key=lambda v: v.get("publishedAt", ""), reverse=True)
     process_new_videos(all_videos)
 
@@ -95,16 +154,6 @@ def run_subscription_poll() -> None:
     subscriptions: list[dict[str, Any]] = store.list_subscriptions()
     if not subscriptions:
         return
-
-    all_videos: list[dict[str, Any]] = []
-    for sub in subscriptions:
-        channel_id = sub.get("channelId")
-        if not channel_id:
-            continue
-        try:
-            all_videos.extend(fetch_channel_videos(channel_id, VIDEOS_PER_CHANNEL))
-        except Exception:
-            log.exception("Poll failed for channel %s", channel_id)
-
+    all_videos = _collect_all_uploads(subscriptions, VIDEOS_PER_CHANNEL)
     if all_videos:
         process_new_videos(all_videos)

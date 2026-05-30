@@ -1,11 +1,19 @@
 from __future__ import annotations
 
+import os
 from typing import Any
 
 from app.db import oauth_repository
 from app.logic.api_handler.handle_yt_discovery import search_music_videos_simple
 from app.logic.recommendations.music_filter import is_likely_music
 from app.logic.recommendations.quota_tracker import can_call, record
+
+
+def _own_channel_names() -> set[str]:
+    """Channels to skip when expanding 'similar to liked' (e.g. the user's own
+    non-music uploads). Configured via env, never hardcoded."""
+    raw = os.environ.get("EXCLUDED_OWN_CHANNELS", "")
+    return {c.strip().lower() for c in raw.split(",") if c.strip()}
 
 
 def retrieve_oauth_music(
@@ -18,6 +26,7 @@ def retrieve_oauth_music(
 
     out: list[dict[str, Any]] = []
     seen: set[str] = set()
+    own_channels = _own_channel_names()
 
     for item in graph.get("music_oauth_items") or []:
         vid = item.get("video_id")
@@ -41,7 +50,7 @@ def retrieve_oauth_music(
         if not title or not can_call(1):
             break
         q_parts = []
-        if channel and channel.lower() not in ("kamil7777",):
+        if channel and channel.lower() not in own_channels:
             q_parts.append(f'"{channel}"')
         short = title[:50].replace('"', "")
         if short:
