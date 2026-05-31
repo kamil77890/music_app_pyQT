@@ -1,3 +1,4 @@
+import logging
 from typing import Literal, Optional
 
 from fastapi import APIRouter, HTTPException, Query
@@ -16,6 +17,7 @@ from app.logic.recommendations.playlist_service import load_playlist
 from app.logic.recommendations.user_taste_graph import build_user_taste_graph
 
 router = APIRouter(tags=["Recommendations"])
+log = logging.getLogger(__name__)
 
 Mode = Literal["focus", "discover", "fresh"]
 
@@ -73,6 +75,19 @@ async def get_recommendations(
         resolved = result["data"]["songs"]
     except (YouTubeQuotaExceededError, YouTubeAccessDeniedError, YouTubeNotFoundError, YouTubeAPIError) as e:
         _raise_youtube_error(e)
+    except SQLAlchemyError as e:
+        log.exception("Recommendation endpoint database error")
+        raise HTTPException(status_code=500, detail={"error": str(e)}) from e
+    except Exception as e:
+        log.exception("Recommendation endpoint failed")
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "RECOMMENDATION_PIPELINE_ERROR",
+                "type": type(e).__name__,
+                "message": str(e),
+            },
+        ) from e
 
     return {
         "success": True,
@@ -113,7 +128,18 @@ async def get_advanced_recommendations(
     except (YouTubeQuotaExceededError, YouTubeAccessDeniedError, YouTubeNotFoundError, YouTubeAPIError) as e:
         _raise_youtube_error(e)
     except SQLAlchemyError as e:
+        log.exception("Advanced recommendation endpoint database error")
         raise HTTPException(status_code=500, detail={"error": str(e)}) from e
+    except Exception as e:
+        log.exception("Advanced recommendation endpoint failed")
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "RECOMMENDATION_PIPELINE_ERROR",
+                "type": type(e).__name__,
+                "message": str(e),
+            },
+        ) from e
 
     return {"success": True, **result}
 

@@ -33,6 +33,7 @@ from app.logic.recommendations.retrievers import (
     retrieve_subscription_candidates,
     retrieve_tag_queries,
 )
+from app.logic.recommendations.retrievers.ytdlp_search import retrieve_ytdlp_candidates
 from app.exceptions.youtube_errors import YouTubeQuotaExceededError
 from app.logic.recommendations.user_taste_graph import build_user_taste_graph
 
@@ -49,6 +50,12 @@ ALGO_PROFILE = {
 _CONFIDENCE_THRESHOLD = float(
     os.environ.get("RECOMMENDATION_CONFIDENCE_THRESHOLD", "0.85")
 )
+_USE_YOUTUBE_API = os.environ.get("RECOMMENDATION_USE_YT_API", "0").lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 
 
 def _compute_confidence(ranked: list[dict[str, Any]], max_results: int) -> float:
@@ -252,12 +259,24 @@ async def run_recommendation_orchestrator(
             out.extend(_run_wave(explore_jobs))
         return out
 
-    sync_batch = await asyncio.to_thread(sync_retrievers)
+    if _USE_YOUTUBE_API:
+        sync_batch = await asyncio.to_thread(sync_retrievers)
+    else:
+        sync_batch = await asyncio.to_thread(
+            retrieve_ytdlp_candidates,
+            graph,
+            excluded,
+            songs,
+            seed_video_id=seed_video_id,
+            mode=mode,
+            max_results=max_results * 8,
+            interest_hint=hint,
+        )
     candidates.extend(sync_batch)
 
     # Gemini-generated search queries cost LLM tokens on every request, so they
     # only run when the caller explicitly opts into LLM assistance.
-    if use_llm_rerank:
+    if use_llm_rerank and _USE_YOUTUBE_API:
         gemini_batch = await retrieve_gemini_queries(graph, excluded)
         candidates.extend(gemini_batch)
 

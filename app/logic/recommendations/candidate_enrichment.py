@@ -12,6 +12,12 @@ from app.logic.tags.universal_tags import validate_tag
 log = logging.getLogger(__name__)
 
 _ENRICH_TOP = int(os.environ.get("RECOMMENDATION_ENRICH_TOP", "80"))
+_USE_YOUTUBE_API = os.environ.get("RECOMMENDATION_USE_YT_API", "0").lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 
 
 def enrich_videos_extended(video_ids: list[str]) -> dict[str, dict[str, Any]]:
@@ -73,6 +79,12 @@ async def enrich_candidates(
     tag_top_n: int | None = None,
 ) -> list[dict[str, Any]]:
     """Merge API stats into candidates; validate snippet tags."""
+    if not _USE_YOUTUBE_API:
+        for c in candidates:
+            raw_tags = c.get("tags") or []
+            c["matchedTags"] = [t for t in raw_tags if validate_tag(str(t))]
+        return candidates
+
     n = tag_top_n or _ENRICH_TOP
     video_ids = [c["videoId"] for c in candidates if c.get("videoId")]
     enriched = enrich_videos_extended(video_ids)
