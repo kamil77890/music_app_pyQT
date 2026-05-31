@@ -127,6 +127,36 @@ def scan_library(music_dir: Optional[str] = None) -> dict[str, Any]:
     return {"total": total, "broken": broken, "broken_count": len(broken), "music_dir": music_dir}
 
 
+def _find_video_id_by_search(artist: str, title: str) -> Optional[str]:
+    """Search YouTube via yt-dlp for a video matching artist+title.
+
+    Returns the first matching videoId or None. Uses no YouTube Data API quota.
+    """
+    query = f'"{artist}" "{title}" official audio' if artist else f'"{title}"'
+    opts: dict[str, Any] = {
+        "quiet": True,
+        "skip_download": True,
+        "extract_flat": True,
+        "noplaylist": True,
+        "nocheckcertificate": True,
+    }
+    cookie_file = _find_cookie_file()
+    if cookie_file:
+        opts["cookiefile"] = cookie_file
+    try:
+        with YoutubeDL(opts) as ydl:
+            data = ydl.extract_info(f"ytsearch5:{query}", download=False)
+    except Exception:
+        log.warning("Video search failed for: %s - %s", artist, title)
+        return None
+    for entry in data.get("entries") or []:
+        if isinstance(entry, dict):
+            vid = entry.get("id")
+            if vid:
+                return str(vid)
+    return None
+
+
 def _fetch_subtitles(video_id: str, base_path: str, basename: str) -> Optional[str]:
     """Download English subtitles as .srt via yt-dlp (no YouTube API quota)."""
     outtmpl = os.path.join(base_path, basename + ".%(ext)s")
@@ -171,9 +201,10 @@ def repair_file(
     """Repair a single file in place. Returns what was fixed.
 
     Strategy (cheapest first):
-      1. If audio is readable and a videoId is known -> refetch metadata via
+      1. If videoId is missing, search YouTube via yt-dlp (free, no quota).
+      2. If audio is readable and a videoId is known -> refetch metadata via
          yt-dlp and re-embed title/artist/cover (no API quota), fetch lyrics.
-      2. If audio is unreadable and a videoId is known -> re-download.
+      3. If audio is unreadable and a videoId is known -> re-download.
     """
     from app.logic.ultimate_downloader import download_song, process_metadata
 
@@ -187,24 +218,40 @@ def repair_file(
     video_id = report["videoId"]
     fixed: list[str] = []
 
-    if not issues:
-        return {"filename": filename, "status": "ok", "fixed": []}
+    # If videoId is missing, try to find it via yt-dlp search (artist + title).
+    if not video_id:
+        artist = (report.get("artist") or "").strip()
+        title = (report.get("title") or "").strip()
+        if artist or title:
+            found = _find_video_id_by_search(artist, title)
+            if found:
+                video_id = found
+                fixed.append("videoId")
+            else:
+                # Also try filename-based search
+                from os.path import splitext
+                name_stem = splitext(filename)[0]
+                if " - " in name_stem:
+                    parts = name_stem.split(" - ", 1)
+                    found = _find_video_id_by_search(parts[0].strip(), parts[1].strip())
+                    if found:
+                        video_id = found
+                        fixed.append("videoId")
 
-    # Recover videoId from genre tag was already attempted in verify_metadata.
     if not video_id:
         return {
             "filename": filename,
             "status": "skipped",
-            "reason": "no recoverable videoId — cannot fetch correct metadata",
+            "reason": "no videoId found — cannot fetch correct metadata",
             "issues": issues,
-            "fixed": [],
+            "fixed": fixed,
         }
 
-    # Case 2: broken audio -> re-download fully.
+    # Case 3: broken audio -> re-download fully.
     if "corrupt_audio" in issues:
         if not allow_redownload:
             return {"filename": filename, "status": "skipped",
-                    "reason": "corrupt audio, redownload disabled", "fixed": []}
+                    "reason": "corrupt audio, redownload disabled", "fixed": fixed}
         try:
             os.remove(file_path)
         except OSError:
@@ -214,6 +261,7 @@ def repair_file(
                 "newPath": os.path.basename(new_path), "fixed": ["audio", "metadata", "cover"]}
 
     # Case 1: in-place metadata/cover repair via yt-dlp metadata (free).
+    # Always fetch fresh metadata and update all fields.
     meta = fetch_metadata(video_id)
     if meta:
         process_metadata(file_path, ext.lstrip("."), video_id, meta=meta)
@@ -222,16 +270,32 @@ def repair_file(
                 fixed.append(tag_issue.replace("missing_", ""))
 
     # Lyrics: fetch + embed (mp3 only for synced lyrics).
-    if fetch_lyrics and "missing_lyrics" in issues and ext == ".mp3":
-        srt_path = _fetch_subtitles(video_id, base_dir, base)
-        if srt_path:
+    if fetch_lyrics and ext == ".mp3" and not _has_lyrics(file_path, ext):
+            srt_path = _fetch_subtitles(video_id, base_dir, base)
+            if srt_path:
+                try:
+                    sync = parse_srt_to_sync(srt_path)
+                    embed_sylt(file_path, sync)
+                    convert_srt_to_txt(srt_path)
+                    fixed.append("lyrics")
+                except Exception as exc:
+                    log.warning("Lyrics embed failed for %s: %s", filename, exc)
+
+    # Cover: try to embed if still missing after process_metadata.
+    if not _has_cover(file_path, ext):
+        meta2 = fetch_metadata(video_id) if not meta else meta
+        thumb = (meta2 or {}).get("thumbnail", "")
+        if thumb:
             try:
-                sync = parse_srt_to_sync(srt_path)
-                embed_sylt(file_path, sync)
-                convert_srt_to_txt(srt_path)
-                fixed.append("lyrics")
+                if ext == ".mp3":
+                    from app.logic.metadata.add_cover import embed_image_mp3
+                    embed_image_mp3(file_path, image_url=thumb)
+                elif ext in (".mp4", ".m4a"):
+                    from app.logic.metadata.add_cover import embed_image_mp4
+                    embed_image_mp4(file_path, image_url=thumb)
+                fixed.append("cover")
             except Exception as exc:
-                log.warning("Lyrics embed failed for %s: %s", filename, exc)
+                log.warning("Cover embed failed for %s: %s", filename, exc)
 
     status = "repaired" if fixed else "unchanged"
     return {"filename": filename, "status": status, "videoId": video_id, "fixed": fixed}
@@ -275,6 +339,136 @@ def repair_library(
         "attempted": len(results),
         "repaired": repaired,
         "results": results,
+    }
+
+
+def check_song_data(file_path: str) -> dict[str, Any]:
+    """Return a comprehensive data report for a single audio file.
+
+    Checks every field: title, artist, videoId, cover, lyrics, duration,
+    format, and file size. Reports whether each is OK or what's wrong.
+    """
+    filename = os.path.basename(file_path)
+    ext = os.path.splitext(filename)[1].lower()
+    base = os.path.splitext(filename)[0]
+
+    meta = verify_metadata(file_path, ext.lstrip("."))
+    title = (meta.get("title") or "").strip()
+    artist = (meta.get("artist") or "").strip()
+    video_id = (meta.get("videoId") or "").strip()
+
+    fields: list[dict[str, Any]] = []
+
+    # Title
+    title_ok = bool(title) and title not in ("N/A", base)
+    fields.append({
+        "field": "title",
+        "value": title,
+        "ok": title_ok,
+        "issue": "" if title_ok else ("missing" if not title else "placeholder"),
+    })
+
+    # Artist
+    artist_ok = bool(artist) and artist.lower() not in _PLACEHOLDER_ARTISTS and artist != "N/A"
+    fields.append({
+        "field": "artist",
+        "value": artist,
+        "ok": artist_ok,
+        "issue": "" if artist_ok else ("missing" if not artist else "placeholder"),
+    })
+
+    # VideoId
+    vid_ok = bool(video_id) and video_id != "N/A" and len(video_id) == 11
+    fields.append({
+        "field": "videoId",
+        "value": video_id if vid_ok else "",
+        "ok": vid_ok,
+        "issue": "" if vid_ok else "missing_or_invalid",
+    })
+
+    # Cover
+    cover_ok = _has_cover(file_path, ext)
+    fields.append({
+        "field": "cover",
+        "value": "embedded" if cover_ok else "none",
+        "ok": cover_ok,
+        "issue": "" if cover_ok else "missing",
+    })
+
+    # Lyrics
+    lyrics_ok = _has_lyrics(file_path, ext)
+    fields.append({
+        "field": "lyrics",
+        "value": "present" if lyrics_ok else "missing",
+        "ok": lyrics_ok,
+        "issue": "" if lyrics_ok else "missing",
+    })
+
+    # Audio readable
+    readable = _audio_readable(file_path)
+    fields.append({
+        "field": "audio",
+        "value": "readable" if readable else "corrupt",
+        "ok": readable,
+        "issue": "" if readable else "corrupt_audio",
+    })
+
+    # Format
+    fields.append({
+        "field": "format",
+        "value": ext.lstrip("."),
+        "ok": True,
+        "issue": "",
+    })
+
+    # File size
+    try:
+        size = os.path.getsize(file_path)
+    except OSError:
+        size = 0
+    fields.append({
+        "field": "size_bytes",
+        "value": size,
+        "ok": size > 0,
+        "issue": "" if size > 0 else "zero_size",
+    })
+
+    return {
+        "filename": filename,
+        "fields": fields,
+        "all_ok": all(f["ok"] for f in fields),
+        "missing_count": sum(1 for f in fields if not f["ok"]),
+    }
+
+
+def check_library_data(music_dir: Optional[str] = None) -> dict[str, Any]:
+    """Check every song in the library and return a comprehensive data report."""
+    if music_dir is None:
+        music_dir = Parameters.get_download_dir()
+
+    if not os.path.isdir(music_dir):
+        return {"total": 0, "songs": [], "music_dir": music_dir}
+
+    songs: list[dict[str, Any]] = []
+    total = 0
+    ok_count = 0
+
+    for root, _dirs, files in os.walk(music_dir):
+        for filename in sorted(files):
+            if not filename.lower().endswith(SUPPORTED_EXTENSIONS):
+                continue
+            total += 1
+            report = check_song_data(os.path.join(root, filename))
+            songs.append(report)
+            if report["all_ok"]:
+                ok_count += 1
+
+    return {
+        "total": total,
+        "ok": ok_count,
+        "broken": total - ok_count,
+        "music_dir": music_dir,
+        "songs": songs,
     }
 
 

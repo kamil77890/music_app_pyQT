@@ -38,3 +38,31 @@ async def repair_library(body: RepairBody = RepairBody()):
         fetch_lyrics=body.fetch_lyrics,
         allow_redownload=body.allow_redownload,
     )
+
+
+@router.get("/check")
+async def check_library_data():
+    """Comprehensive data check for every song in the library.
+
+    Returns per-song field status for: title, artist, videoId, cover,
+    lyrics, audio health, format, and file size.
+    """
+    return await run_in_threadpool(library_repair.check_library_data)
+
+
+@router.post("/check")
+async def check_song_data(body: RepairBody = RepairBody()):
+    """Comprehensive data check for specific songs, or all if filenames is empty."""
+    music_dir = None
+    from app.config.stałe import Parameters
+    music_dir = Parameters.get_download_dir()
+
+    if body.filenames:
+        import os
+        result: list[dict] = []
+        for fn in body.filenames:
+            fp = os.path.join(music_dir, fn)
+            if os.path.isfile(fp):
+                result.append(library_repair.check_song_data(fp))
+        return {"songs": result}
+    return await run_in_threadpool(library_repair.check_library_data)
