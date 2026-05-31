@@ -21,12 +21,42 @@ def _get_playlist_path() -> Path:
     return _get_playlist_dir() / "playlist.json"
 
 
+def _extract_embedded_lyrics(file_path: str, ext: str) -> str:
+    """Extract lyrics embedded in the audio file's metadata tags."""
+    try:
+        if ext in (".mp3",):
+            from mutagen.id3 import ID3
+            id3 = ID3(file_path)
+            # USLT (unsynced lyrics)
+            for key in id3:
+                if key.startswith("USLT"):
+                    return str(id3[key].text).strip()
+            # SYLT (synced lyrics) — just return text lines
+            for key in id3:
+                if key.startswith("SYLT"):
+                    return str(id3[key].text).strip()
+        elif ext in (".mp4", ".m4a"):
+            from mutagen.mp4 import MP4
+            mp4 = MP4(file_path)
+            if "\xa9lyr" in mp4:
+                return str(mp4["\xa9lyr"][0]).strip()
+    except Exception:
+        pass
+    return ""
+
+
 def _read_lyrics(file_path: str, filename: str) -> str:
-    """Read lyrics from a sidecar .txt or .srt file next to the audio file."""
+    """Read lyrics from embedded tags or sidecar files next to the audio."""
     base = os.path.splitext(filename)[0]
     base_dir = os.path.dirname(file_path)
+    ext = os.path.splitext(filename)[1].lower()
 
-    # Sidecar .txt in a lyrics/ subdirectory
+    # 1. Embedded lyrics in audio metadata
+    embedded = _extract_embedded_lyrics(file_path, ext)
+    if embedded:
+        return embedded
+
+    # 2. Sidecar .txt in a lyrics/ subdirectory
     lyrics_txt = os.path.join(base_dir, "lyrics", base + ".txt")
     if os.path.isfile(lyrics_txt):
         try:
@@ -35,7 +65,7 @@ def _read_lyrics(file_path: str, filename: str) -> str:
         except Exception:
             pass
 
-    # Fallback: .en.srt in lyrics/ subdirectory
+    # 3. .en.srt in lyrics/ subdirectory
     lyrics_srt = os.path.join(base_dir, "lyrics", base + ".en.srt")
     if os.path.isfile(lyrics_srt):
         try:
@@ -44,7 +74,7 @@ def _read_lyrics(file_path: str, filename: str) -> str:
         except Exception:
             pass
 
-    # Fallback: .en.srt next to the audio file
+    # 4. .en.srt next to the audio file
     srt_sidecar = os.path.join(base_dir, base + ".en.srt")
     if os.path.isfile(srt_sidecar):
         try:
