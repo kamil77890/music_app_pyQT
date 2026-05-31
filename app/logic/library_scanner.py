@@ -21,6 +21,41 @@ def _get_playlist_path() -> Path:
     return _get_playlist_dir() / "playlist.json"
 
 
+def _read_lyrics(file_path: str, filename: str) -> str:
+    """Read lyrics from a sidecar .txt or .srt file next to the audio file."""
+    base = os.path.splitext(filename)[0]
+    base_dir = os.path.dirname(file_path)
+
+    # Sidecar .txt in a lyrics/ subdirectory
+    lyrics_txt = os.path.join(base_dir, "lyrics", base + ".txt")
+    if os.path.isfile(lyrics_txt):
+        try:
+            with open(lyrics_txt, encoding="utf-8") as f:
+                return f.read().strip()
+        except Exception:
+            pass
+
+    # Fallback: .en.srt in lyrics/ subdirectory
+    lyrics_srt = os.path.join(base_dir, "lyrics", base + ".en.srt")
+    if os.path.isfile(lyrics_srt):
+        try:
+            with open(lyrics_srt, encoding="utf-8") as f:
+                return f.read().strip()
+        except Exception:
+            pass
+
+    # Fallback: .en.srt next to the audio file
+    srt_sidecar = os.path.join(base_dir, base + ".en.srt")
+    if os.path.isfile(srt_sidecar):
+        try:
+            with open(srt_sidecar, encoding="utf-8") as f:
+                return f.read().strip()
+        except Exception:
+            pass
+
+    return ""
+
+
 def scan_music_files(music_dir: str | None = None) -> list[dict]:
     """Walk *music_dir* (default ``FILEPATH``) and read metadata from every
     supported audio file.  Returns a list of song dicts ready for
@@ -60,6 +95,8 @@ def scan_music_files(music_dir: str | None = None) -> list[dict]:
             if video_id == "N/A":
                 video_id = ""
 
+            lyrics = _read_lyrics(file_path, filename)
+
             songs.append({
                 "title": title,
                 "artist": artist,
@@ -69,6 +106,7 @@ def scan_music_files(music_dir: str | None = None) -> list[dict]:
                 "path": file_path,
                 "viewed": False,
                 "duration": 0,
+                "lyrics": lyrics,
             })
 
     log.info("Scanned %d audio files in %s", len(songs), music_dir)

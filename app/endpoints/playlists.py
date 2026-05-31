@@ -68,6 +68,25 @@ def _deduplicate_songs(data: dict) -> dict:
     return data
 
 
+def _inject_lyrics(songs: list[dict]) -> list[dict]:
+    """Add lyrics to songs that are missing them, reading from sidecar files."""
+    from app.logic.library_scanner import _read_lyrics
+
+    out: list[dict] = []
+    for s in songs:
+        if s.get("lyrics"):
+            out.append(s)
+            continue
+        fp = s.get("path", "")
+        fn = s.get("filename", "")
+        if fp and fn:
+            lyrics = _read_lyrics(fp, fn)
+            s = dict(s)
+            s["lyrics"] = lyrics
+        out.append(s)
+    return out
+
+
 @router.get("/playlists/all-songs")
 def get_all_songs_playlist():
     """Zwraca zawartość playlist.json z folderu 'All Songs'.
@@ -85,6 +104,7 @@ def get_all_songs_playlist():
         if os.path.isfile(playlist_file):
             with open(playlist_file, "r", encoding="utf-8") as f:
                 data = json.load(f)
+            data["songs"] = _inject_lyrics(data.get("songs", []))
         else:
             log.info("playlist.json nie istnieje — uruchamiam skan plików…")
             data = ensure_playlist_and_db()
