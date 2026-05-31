@@ -31,6 +31,7 @@ _HIGH_TRUST = frozenset({
     "notification",
     "oauth_music_liked",
     "oauth_similar",
+    "reference_playlist",
 })
 
 

@@ -16,6 +16,7 @@ from app.db import (
 from app.db import tag_repository as tag_repo
 from app.logic.recommendations.music_filter import is_likely_music, music_likelihood
 from app.logic.recommendations.playlist_service import get_playlist_path, load_playlist
+from app.logic.recommendations.reference_playlist import get_reference_playlist
 from app.utils.music_utils import build_library_index, normalize
 
 
@@ -28,7 +29,9 @@ def graph_hash() -> str:
         base = f"{path}:{path.stat().st_mtime}:{len(songs)}"
     ev = event_repository.events_hash_suffix()
     oauth = "yt1" if oauth_repository.is_connected() else "yt0"
-    payload = f"{base}:{ev}:{oauth}:taste_graph_v2"
+    ref = get_reference_playlist()
+    ref_key = f"{ref.get('updatedAt', '')}:{ref.get('itemCount', 0)}"
+    payload = f"{base}:{ev}:{oauth}:{ref_key}:taste_graph_v2"
     return hashlib.sha256(payload.encode()).hexdigest()[:16]
 
 
@@ -67,11 +70,13 @@ def _merge_artist_weights(
     library: Counter[str],
     behavioral: Counter[str],
     imported_music: Counter[str],
+    reference: Counter[str],
 ) -> list[dict[str, Any]]:
-    all_artists = set(library) | set(behavioral) | set(imported_music)
+    all_artists = set(library) | set(behavioral) | set(imported_music) | set(reference)
     lib_total = sum(library.values()) or 1
     beh_total = sum(behavioral.values()) or 1
     imp_total = sum(imported_music.values()) or 1
+    ref_total = sum(reference.values()) or 1
 
     merged: list[tuple[float, int, str, dict[str, Any]]] = []
     for artist in all_artists:
@@ -79,7 +84,8 @@ def _merge_artist_weights(
         lib_w = (lib_count / lib_total) * 2.0
         beh_w = (behavioral.get(artist, 0) / beh_total) * 1.5
         imp_w = (imported_music.get(artist, 0) / imp_total) * 0.35
-        weight = lib_w + beh_w + imp_w
+        ref_w = (reference.get(artist, 0) / ref_total) * 1.1
+        weight = lib_w + beh_w + imp_w + ref_w
         merged.append((
             weight,
             lib_count,
@@ -90,6 +96,7 @@ def _merge_artist_weights(
                 "song_count": lib_count,
                 "play_count": behavioral.get(artist, 0),
                 "import_music_count": imported_music.get(artist, 0),
+                "reference_count": reference.get(artist, 0),
                 "from_library": lib_count > 0,
             },
         ))
@@ -115,6 +122,8 @@ def build_user_taste_graph(*, use_cache: bool = True) -> dict[str, Any]:
     liked_ids = feedback_repository.get_liked_video_ids() | _legacy_liked_video_ids()
 
     music_oauth, _other_oauth = _classify_oauth_items()
+    reference_playlist = get_reference_playlist()
+    reference_items = reference_playlist.get("items", []) if isinstance(reference_playlist, dict) else []
 
     top_tags = [
         {"tag": tag, "weight": round(weight, 4)}
@@ -139,8 +148,14 @@ def build_user_taste_graph(*, use_cache: bool = True) -> dict[str, Any]:
         if ch:
             imported_music_artists[ch] += 1
 
+    reference_artists: Counter[str] = Counter()
+    for item in reference_items:
+        artist = (item.get("artist") or "").strip()
+        if artist:
+            reference_artists[artist] += 1
+
     top_artists = _merge_artist_weights(
-        library_artists, behavioral_artists, imported_music_artists
+        library_artists, behavioral_artists, imported_music_artists, reference_artists
     )
 
     library_primary = next(
@@ -188,6 +203,26 @@ def build_user_taste_graph(*, use_cache: bool = True) -> dict[str, Any]:
             "song_count": c,
             "weight": round(c / n_lib, 4),
         })
+
+    seen_title_keys = {normalize(t.get("title") or "") for t in top_titles}
+    ref_total = len(reference_items) or 1
+    for item in reference_items[:20]:
+        title = (item.get("title") or "").strip()
+        if not title:
+            continue
+        key = normalize(title)
+        if not key or key in seen_title_keys:
+            continue
+        seen_title_keys.add(key)
+        top_titles.append({
+            "title": title,
+            "artist": (item.get("artist") or "").strip(),
+            "song_count": 0,
+            "weight": round(0.75 / ref_total, 4),
+            "source": "reference_playlist",
+        })
+        if len(top_titles) >= 30:
+            break
 
     era_weights = by_dim.get("era", {})
     top_eras = [
@@ -248,6 +283,13 @@ def build_user_taste_graph(*, use_cache: bool = True) -> dict[str, Any]:
             }
             for i in music_oauth[:20]
         ],
+        "reference_playlist": {
+            "url": reference_playlist.get("url"),
+            "title": reference_playlist.get("title"),
+            "updatedAt": reference_playlist.get("updatedAt"),
+            "itemCount": reference_playlist.get("itemCount", 0),
+        },
+        "reference_playlist_items": reference_items[:25],
     }
 
     tag_repo.save_taste_profile(g_hash, graph)

@@ -15,6 +15,7 @@ from app.logic.api_handler.handle_yt_discovery import (
     TOP_TITLE_POPULAR_SOURCE,
     YT_EXPLORE_SOURCE,
 )
+from app.logic.recommendations.music_filter import is_short
 from app.logic.recommendations.resolver import cover_url
 
 log = logging.getLogger(__name__)
@@ -53,6 +54,12 @@ def _entry_to_candidate(
     if not vid:
         return None
     title = entry.get("title") or ""
+    if is_short(
+        title=title,
+        duration=entry.get("duration"),
+        url=entry.get("url") or entry.get("webpage_url") or "",
+    ):
+        return None
     artist = entry.get("channel") or entry.get("uploader") or entry.get("uploader_id") or ""
     thumbs = entry.get("thumbnails") or []
     thumb = ""
@@ -134,6 +141,8 @@ def _notification_candidates(excluded: set[str], seen: set[str]) -> list[dict[st
     for n in subscription_repository.list_notifications(unseen_only=True)[:15]:
         vid = n.get("videoId")
         if not vid or vid in excluded or vid in seen:
+            continue
+        if is_short(title=n.get("title", "")):
             continue
         seen.add(vid)
         out.append({
@@ -265,6 +274,26 @@ def retrieve_ytdlp_candidates(
                 reason=f"yt-dlp search similar to liked/imported: {title[:35]}",
                 max_results=5,
             )
+        if len(out) >= max_results:
+            return out[:max_results]
+
+    for rank, item in enumerate((graph.get("reference_playlist_items") or [])[:12]):
+        title = (item.get("title") or "").replace('"', "").strip()
+        artist = (item.get("artist") or "").replace('"', "").strip()
+        if not title:
+            continue
+        query = f'"{artist}" "{title[:55]}" similar music' if artist else f'"{title[:55]}" similar music'
+        _add_search(
+            out, seen, excluded, query,
+            source="reference_playlist",
+            reason=f"yt-dlp search from your reference playlist: {title[:35]}",
+            max_results=6,
+            extra={
+                "library_title_focus": title,
+                "library_title_rank": rank,
+                "focus_kind": "title",
+            },
+        )
         if len(out) >= max_results:
             return out[:max_results]
 

@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Query, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Query, HTTPException
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse
 from app.logic.ultimate_downloader import download_song, download_playlist
@@ -51,8 +51,15 @@ def wrap_file_response(file_path: str):
     return response
 
 
+def _refresh_recommendations_after_download() -> None:
+    from app.logic.recommendations.recommendation_feed import refresh_after_library_change
+
+    refresh_after_library_change(reason="download_complete")
+
+
 @router.get("/download")
 async def download(
+    background_tasks: BackgroundTasks,
     videoId: str = Query(default="0"),
     id: str = Query(default="0"),
     playlistId: str = Query(default="0"),
@@ -64,4 +71,7 @@ async def download(
     else:
         file_path = await run_in_threadpool(download_song, videoId, id, format)
 
-    return wrap_file_response(file_path)
+    background_tasks.add_task(_refresh_recommendations_after_download)
+    response = wrap_file_response(file_path)
+    response.background = background_tasks
+    return response

@@ -8,6 +8,7 @@ from typing import Any
 
 from app.db import subscription_repository as store
 from app.logic.api_handler.handle_yt_service import create_youtube_service
+from app.logic.recommendations.music_filter import is_short
 from app.utils.youtube_error_handler import youtube_api_error_handler
 
 log = logging.getLogger(__name__)
@@ -124,7 +125,9 @@ def _collect_all_uploads(
     all_videos: list[dict[str, Any]] = []
     for cid in channel_ids:
         try:
-            all_videos.extend(fetch_channel_videos(cid, per_channel))
+            for v in fetch_channel_videos(cid, per_channel):
+                if not is_short(title=v.get("title", "")):
+                    all_videos.append(v)
         except Exception:
             log.exception("Failed to fetch uploads for channel %s", cid)
     return all_videos

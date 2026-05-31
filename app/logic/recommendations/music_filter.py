@@ -16,6 +16,27 @@ _NON_MUSIC_TITLE = re.compile(
     re.I,
 )
 
+_SHORTS_TITLE = re.compile(r"#shorts\b", re.I)
+
+
+def is_short(
+    title: str = "",
+    duration: object = None,
+    url: str = "",
+) -> bool:
+    if _SHORTS_TITLE.search(title or ""):
+        return True
+    if "/shorts/" in (url or ""):
+        return True
+    if duration is not None:
+        try:
+            if int(duration) <= 61:
+                return True
+        except (TypeError, ValueError):
+            pass
+    return False
+
+
 _MUSIC_TITLE = re.compile(
     r"\b("
     r"nightcore|lyrics|official|audio|mv\b|amv|cover|remix|ft\.|feat\.|"

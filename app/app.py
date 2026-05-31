@@ -3,6 +3,7 @@ import os
 import threading
 import time
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -47,8 +48,10 @@ AUTO_TAG_BATCH = int(os.environ.get("AUTO_TAG_BATCH", "12"))
 
 # Background recommendation discovery feed.
 REC_FEED_ENABLED = os.environ.get("RECOMMENDATION_FEED_ENABLED", "1") == "1"
-REC_FEED_INTERVAL_SECONDS = int(os.environ.get("RECOMMENDATION_FEED_INTERVAL_SECONDS", "21600"))  # 6h
 REC_FEED_START_DELAY_SECONDS = int(os.environ.get("RECOMMENDATION_FEED_START_DELAY_SECONDS", "120"))
+REC_FEED_DAILY_TIME = os.environ.get("RECOMMENDATION_FEED_DAILY_TIME", "00:00")
+REC_FEED_MAX_RESULTS = int(os.environ.get("RECOMMENDATION_REFRESH_RESULTS", "25"))
+REC_FEED_MODE = os.environ.get("RECOMMENDATION_FEED_MODE", "discover")
 
 
 def _oauth_import_loop() -> None:
@@ -90,15 +93,48 @@ def _auto_tag_loop() -> None:
 
 def _recommendation_feed_loop() -> None:
     import asyncio as _asyncio
-    from app.logic.recommendations.recommendation_feed import refresh_feed
+    from app.logic.recommendations.recommendation_feed import get_feed, refresh_feed
+
+    def seconds_until_daily_refresh() -> float:
+        try:
+            hour_s, minute_s = REC_FEED_DAILY_TIME.split(":", 1)
+            hour = int(hour_s)
+            minute = int(minute_s)
+        except (ValueError, TypeError):
+            hour, minute = 0, 0
+        now = datetime.now()
+        target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if target <= now:
+            target += timedelta(days=1)
+        return max(1.0, (target - now).total_seconds())
 
     time.sleep(REC_FEED_START_DELAY_SECONDS)
+    try:
+        if not get_feed(limit=1).get("items"):
+            _asyncio.run(
+                refresh_feed(
+                    max_results=REC_FEED_MAX_RESULTS,
+                    mode=REC_FEED_MODE,
+                    replace=True,
+                    reason="startup_empty_cache",
+                )
+            )
+    except Exception:
+        log.exception("Initial recommendation feed refresh failed")
+
     while True:
+        time.sleep(seconds_until_daily_refresh())
         try:
-            _asyncio.run(refresh_feed())
+            _asyncio.run(
+                refresh_feed(
+                    max_results=REC_FEED_MAX_RESULTS,
+                    mode=REC_FEED_MODE,
+                    replace=True,
+                    reason="daily_midnight",
+                )
+            )
         except Exception:
             log.exception("Recommendation feed refresh failed")
-        time.sleep(REC_FEED_INTERVAL_SECONDS)
 
 
 @asynccontextmanager

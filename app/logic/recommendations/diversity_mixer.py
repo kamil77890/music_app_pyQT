@@ -3,10 +3,10 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from app.logic.recommendations.music_filter import is_likely_music
+from app.logic.recommendations.music_filter import is_likely_music, is_short
 
 _EXPLORE_SOURCES = frozenset({
-    "yt_explore", "gemini_query", "tag_search", "music_search",
+    "yt_explore", "gemini_query", "tag_search", "music_search", "reference_playlist",
 })
 
 _MIX_PATTERNS = re.compile(
@@ -46,6 +46,8 @@ def apply_diversity(
     def accept(row: dict[str, Any], *, force_explore: bool = False) -> bool:
         vid = row.get("videoId")
         if not vid or vid in disliked:
+            return False
+        if is_short(title=row.get("title", "")):
             return False
         cid = row.get("channelId") or ""
         if cid and cid in hidden:
