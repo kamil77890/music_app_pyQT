@@ -10,6 +10,8 @@ class PlaylistSong(BaseModel):
     duration: int
     cover: Optional[str] = None
     path: str
+    dominantColor: Optional[str] = None
+    colorPalette: Optional[List[str]] = None
 
     model_config = ConfigDict(from_attributes=True)
 
