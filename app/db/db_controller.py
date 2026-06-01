@@ -1,4 +1,7 @@
 import sqlite3
+import logging
+
+log = logging.getLogger(__name__)
 
 
 class DbController:
@@ -6,6 +9,7 @@ class DbController:
         self.conn = sqlite3.connect("database.db")
         self.cursor = self.conn.cursor()
         self.create_all_tables()
+        self.add_color_columns_if_missing()
 
     def create_table(self, table_name: str, columns: str) -> None:
         self.cursor.execute(
@@ -53,7 +57,9 @@ class DbController:
             artist TEXT,
             album TEXT,
             videoId TEXT UNIQUE,
-            liked BOOLEAN DEFAULT 0
+            liked BOOLEAN DEFAULT 0,
+            dominant_color TEXT DEFAULT NULL,
+            color_palette TEXT DEFAULT NULL
             """
         )
         self.create_table(
@@ -84,3 +90,18 @@ class DbController:
 
     def close(self):
         self.conn.close()
+
+    def add_color_columns_if_missing(self):
+        """Add dominant_color and color_palette columns if they don't exist."""
+        try:
+            # Try to query the new columns
+            self.cursor.execute("SELECT dominant_color FROM songs LIMIT 1")
+        except Exception:
+            # Columns don't exist, add them
+            try:
+                self.cursor.execute("ALTER TABLE songs ADD COLUMN dominant_color TEXT DEFAULT NULL")
+                self.cursor.execute("ALTER TABLE songs ADD COLUMN color_palette TEXT DEFAULT NULL")
+                self.conn.commit()
+                log.info("Added color columns to songs table")
+            except Exception as e:
+                log.warning(f"Could not add color columns: {e}")
