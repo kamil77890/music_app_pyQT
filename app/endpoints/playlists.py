@@ -3,6 +3,7 @@ import os
 import logging
 from fastapi import APIRouter, HTTPException
 from app.config.stałe import Parameters
+from app.logic.color_extractor import extract_color_palette
 
 log = logging.getLogger(__name__)
 
@@ -68,6 +69,25 @@ def _deduplicate_songs(data: dict) -> dict:
     return data
 
 
+def _enrich_songs_with_colors(songs: list) -> list:
+    """Add dominantColor and colorPalette from cover if available."""
+    for song in songs:
+        if song.get("cover"):
+            try:
+                color_data = extract_color_palette(song["cover"])
+                song["dominantColor"] = color_data.get("dominantColor")
+                song["colorPalette"] = color_data.get("colorPalette")
+            except Exception as e:
+                log.warning(f"Could not extract colors for {song.get('title')}: {e}")
+                song["dominantColor"] = None
+                song["colorPalette"] = None
+        else:
+            song["dominantColor"] = None
+            song["colorPalette"] = None
+    
+    return songs
+
+
 def _inject_lyrics(songs: list[dict]) -> list[dict]:
     """Add lyrics to songs that are missing them, reading from sidecar files."""
     from app.logic.library_scanner import _read_lyrics
@@ -89,27 +109,23 @@ def _inject_lyrics(songs: list[dict]) -> list[dict]:
 
 @router.get("/playlists/all-songs")
 def get_all_songs_playlist():
-    """Zwraca zawartość playlist.json z folderu 'All Songs'.
-
-    Jeśli plik nie istnieje, skanuje katalog z muzyką, tworzy playlist.json
-    i synchronizuje znalezione utwory z bazą danych.
-    """
-    from app.logic.library_scanner import ensure_playlist_and_db
-
+    """Zwraca całą zawartość pliku playlist.json z folderu 'All Songs' z usuniętymi duplikatami i kolorami okładek."""
     download_dir = Parameters.get_download_dir()
     playlist_folder = os.path.join(download_dir, "All Songs")
     playlist_file = os.path.join(playlist_folder, "playlist.json")
 
+    if not os.path.isfile(playlist_file):
+        raise HTTPException(
+            status_code=404,
+            detail=f"Playlist 'All Songs' nie istnieje: {playlist_file}"
+        )
+
     try:
-        if os.path.isfile(playlist_file):
-            with open(playlist_file, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            data["songs"] = _inject_lyrics(data.get("songs", []))
-        else:
-            log.info("playlist.json nie istnieje — uruchamiam skan plików…")
-            data = ensure_playlist_and_db()
+        with open(playlist_file, "r", encoding="utf-8") as f:
+            data = json.load(f)
 
         data = _deduplicate_songs(data)
+        data["songs"] = _enrich_songs_with_colors(data.get("songs", []))
         return data
     except json.JSONDecodeError as e:
         log.error("Błąd parsowania playlist.json: %s", e)
