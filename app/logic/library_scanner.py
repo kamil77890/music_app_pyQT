@@ -7,6 +7,7 @@ from pathlib import Path
 
 from app.config.stałe import Parameters
 from app.logic.metadata.add_metadata import verify_metadata
+from app.logic.color_extractor import extract_color_palette
 
 log = logging.getLogger(__name__)
 
@@ -188,14 +189,19 @@ def sync_songs_to_db(songs: list[dict]) -> int:
             vid = song.get("videoId", "").strip()
             title = song.get("title", "").strip()
             artist = song.get("artist", "Unknown Artist").strip()
+            cover = song.get("cover", "")
 
             if vid and vid in existing_video_ids:
                 continue
             if title.lower() in existing_titles:
                 continue
 
-            columns = ["title", "artist", "videoId", "liked"]
-            values = [title, artist, vid or None, 0]
+            # Extract color palette from cover image
+            color_data = extract_color_palette(cover) if cover else {"dominantColor": None, "colorPalette": None}
+            color_palette_json = json.dumps(color_data.get("colorPalette")) if color_data.get("colorPalette") else None
+
+            columns = ["title", "artist", "videoId", "liked", "dominant_color", "color_palette"]
+            values = [title, artist, vid or None, 0, color_data.get("dominantColor"), color_palette_json]
 
             try:
                 db.insert("songs", columns, values)
