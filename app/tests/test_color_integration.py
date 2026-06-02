@@ -1,7 +1,3 @@
-import pytest
-import json
-import tempfile
-import os
 from fastapi.testclient import TestClient
 from app.app import app
 from app.db.db_controller import DbController
@@ -31,6 +27,30 @@ def test_get_all_songs_includes_colors():
             assert song["dominantColor"].startswith("#")
             assert len(song["dominantColor"]) == 7
         
+        if song.get("colorPalette"):
+            assert isinstance(song["colorPalette"], list)
+            assert len(song["colorPalette"]) == 3
+            for color in song["colorPalette"]:
+                assert color.startswith("#")
+                assert len(color) == 7
+
+
+def test_api_songs_includes_color_fields():
+    response = client.get("/api/songs")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert "songs" in data
+
+    if data["songs"]:
+        song = data["songs"][0]
+        assert "dominantColor" in song
+        assert "colorPalette" in song
+
+        if song.get("dominantColor"):
+            assert song["dominantColor"].startswith("#")
+            assert len(song["dominantColor"]) == 7
+
         if song.get("colorPalette"):
             assert isinstance(song["colorPalette"], list)
             assert len(song["colorPalette"]) == 3

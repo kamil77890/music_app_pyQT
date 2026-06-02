@@ -1,6 +1,7 @@
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 from app.logic.metadata.add_metadata import verify_metadata
+from app.logic.color_extractor import extract_color_palette
 from app.config.stałe import Parameters
 import os
 
@@ -23,12 +24,17 @@ async def get_songs():
                 ext = os.path.splitext(filename)[1].lstrip(".").lower()
                 meta = verify_metadata(file_path, ext)
 
+                cover = meta.get("cover", "")
+                color_data = extract_color_palette(cover) if cover else {"dominantColor": None, "colorPalette": None}
+
                 song_entry = {
                     "filename": filename,
                     "title": meta.get("title", os.path.splitext(filename)[0]),
                     "artist": meta.get("artist", "Unknown Artist"),
                     "videoId": meta.get("videoId", ""),
-                    "cover": meta.get("cover", ""),
+                    "cover": cover,
+                    "dominantColor": color_data.get("dominantColor"),
+                    "colorPalette": color_data.get("colorPalette"),
                     "format": ext,
                     "size_bytes": os.path.getsize(file_path),
                 }
