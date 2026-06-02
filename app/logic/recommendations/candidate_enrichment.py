@@ -8,6 +8,7 @@ from app.db import candidate_repository
 from app.logic.api_handler.handle_yt_discovery import enrich_videos
 from app.logic.recommendations.quota_tracker import can_call, record
 from app.logic.tags.universal_tags import validate_tag
+from app.utils.youtube_error_handler import youtube_api_error_handler
 
 log = logging.getLogger(__name__)
 
@@ -20,6 +21,7 @@ _USE_YOUTUBE_API = os.environ.get("RECOMMENDATION_USE_YT_API", "0").lower() in {
 }
 
 
+@youtube_api_error_handler
 def enrich_videos_extended(video_ids: list[str]) -> dict[str, dict[str, Any]]:
     """YouTube videos.list with stats + snippet tags; uses candidate_cache."""
     if not video_ids:
