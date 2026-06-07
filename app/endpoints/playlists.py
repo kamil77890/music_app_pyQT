@@ -1,13 +1,124 @@
 import json
 import os
+import re
 import logging
-from fastapi import APIRouter, HTTPException
+from typing import Optional
+from urllib.parse import urlparse, parse_qs
+
+from fastapi import APIRouter, HTTPException, Query
+from googleapiclient.errors import HttpError
+
 from app.config.stałe import Parameters
 from app.logic.color_extractor import extract_color_palette
+from app.logic.api_handler.handle_playlist_search import get_playlist_songs_paginated
+from app.logic.api_handler.handle_yt_service import create_youtube_service
+from app.models.yt_convert.convert_video_item import convert_video_item as convert_youtube_item_to_song
 
 log = logging.getLogger(__name__)
 
 router = APIRouter(tags=["Playlists"])
+
+
+def _extract_playlist_id(value: str) -> str:
+    """Extract YouTube playlist ID from a URL or raw ID string."""
+    raw = value.strip()
+
+    # Already a valid-looking playlist ID
+    if re.match(r"^(PL|UU|LL|RD|RDMM|OL)[A-Za-z0-9_-]+$", raw):
+        return raw
+
+    try:
+        parsed = urlparse(raw)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Nieprawidłowy URL playlisty")
+
+    hostname = parsed.hostname or ""
+    if "youtube.com" in hostname or "youtu.be" in hostname:
+        qs = parse_qs(parsed.query)
+        if "list" in qs:
+            return qs["list"][0]
+
+    raise HTTPException(status_code=400, detail="Nie znaleziono ID playlisty w podanym URL")
+
+
+@router.get("/playlist")
+async def get_playlist(
+    url: str = Query(..., description="YouTube playlist URL lub playlist_id"),
+    pageToken: Optional[str] = Query(None, description="Token do paginacji"),
+):
+    """Pobiera playlistę z YouTube i zwraca strukturę identyczną jak /search.
+
+    Klient frontendowy normalizuje odpowiedź przez normalizePlaylistUrlResponse
+    która odczytuje json.playlists[0].songs.
+    """
+    playlist_id = _extract_playlist_id(url)
+
+    try:
+        youtube = create_youtube_service()
+        pl_response = youtube.playlists().list(
+            part="snippet,contentDetails",
+            id=playlist_id,
+        ).execute()
+    except HttpError as e:
+        raise HTTPException(
+            status_code=e.resp.status,
+            detail=f"Błąd YouTube API: {e}",
+        )
+
+    pl_items = pl_response.get("items", [])
+    if not pl_items:
+        raise HTTPException(status_code=404, detail="Playlista nie znaleziona")
+
+    pl_data = pl_items[0]
+    snippet = pl_data.get("snippet", {})
+    thumbs = snippet.get("thumbnails", {}) or {}
+
+    playlist_meta = {
+        "id": playlist_id,
+        "title": (snippet.get("title") or "Unknown Playlist").replace("&amp;", "&"),
+        "artist": (snippet.get("channelTitle") or "Unknown Channel").replace("&amp;", "&"),
+        "duration": 0,
+        "videoId": playlist_id,
+        "cover": thumbs.get("high", {}).get("url") or thumbs.get("medium", {}).get("url") or "",
+        "songs": (pl_data.get("contentDetails") or {}).get("itemCount", 0),
+        "views": "",
+        "fileUri": "",
+        "isLocal": False,
+        "isPlaylist": True,
+    }
+
+    songs_data = await get_playlist_songs_paginated(
+        playlist_id,
+        page_token=pageToken,
+        page_size=50,
+    )
+
+    formatted_songs = [
+        convert_youtube_item_to_song(item, idx)
+        for idx, item in enumerate(songs_data.get("songs", []))
+    ]
+
+    return {
+        "success": True,
+        "data": {
+            "songs": formatted_songs,
+            "playlist": [playlist_meta],
+            "authors": [],
+            "nextPageToken": songs_data.get("nextPageToken"),
+        },
+        "playlists": [
+            {
+                "id": playlist_id,
+                "videoId": playlist_id,
+                "title": playlist_meta["title"],
+                "artist": playlist_meta["artist"],
+                "cover": playlist_meta["cover"],
+                "songs": formatted_songs,
+                "nextPageToken": songs_data.get("nextPageToken"),
+                "isPlaylist": True,
+            }
+        ],
+    }
 
 
 def _count_filled_fields(song: dict) -> int:
