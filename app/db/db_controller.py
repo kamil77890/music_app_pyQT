@@ -1,8 +1,4 @@
 import sqlite3
-import logging
-
-log = logging.getLogger(__name__)
-
 
 class DbController:
     def __init__(self):
@@ -10,6 +6,9 @@ class DbController:
         self.cursor = self.conn.cursor()
         self.create_all_tables()
         self.add_color_columns_if_missing()
+        self.add_library_columns_if_missing()
+        self.ensure_sqlite_performance()
+        self.ensure_indexes()
 
     def create_table(self, table_name: str, columns: str) -> None:
         self.cursor.execute(
@@ -21,6 +20,12 @@ class DbController:
         else:
             self.cursor.execute(query)
         return self.cursor.fetchall()
+
+    def execute_write(self, query: str, params=None) -> None:
+        if params:
+            self.cursor.execute(query, params)
+        else:
+            self.cursor.execute(query)
 
     def insert(self, table_name: str, columns: list, values: list) -> None:
         cols = ", ".join(columns)
@@ -57,6 +62,13 @@ class DbController:
             artist TEXT,
             album TEXT,
             videoId TEXT UNIQUE,
+            path TEXT,
+            file_mtime INTEGER,
+            file_size INTEGER,
+            lyrics_path TEXT,
+            lyrics_hash TEXT,
+            lyrics_updated_at TEXT,
+            has_lyrics BOOLEAN DEFAULT 0,
             liked BOOLEAN DEFAULT 0,
             dominant_color TEXT DEFAULT NULL,
             color_palette TEXT DEFAULT NULL
@@ -102,6 +114,46 @@ class DbController:
                 self.cursor.execute("ALTER TABLE songs ADD COLUMN dominant_color TEXT DEFAULT NULL")
                 self.cursor.execute("ALTER TABLE songs ADD COLUMN color_palette TEXT DEFAULT NULL")
                 self.conn.commit()
-                log.info("Added color columns to songs table")
-            except Exception as e:
-                log.warning(f"Could not add color columns: {e}")
+            except Exception:
+                pass
+
+    def add_library_columns_if_missing(self):
+        columns = {
+            "path": "ALTER TABLE songs ADD COLUMN path TEXT",
+            "file_mtime": "ALTER TABLE songs ADD COLUMN file_mtime INTEGER",
+            "file_size": "ALTER TABLE songs ADD COLUMN file_size INTEGER",
+            "lyrics_path": "ALTER TABLE songs ADD COLUMN lyrics_path TEXT",
+            "lyrics_hash": "ALTER TABLE songs ADD COLUMN lyrics_hash TEXT",
+            "lyrics_updated_at": "ALTER TABLE songs ADD COLUMN lyrics_updated_at TEXT",
+            "has_lyrics": "ALTER TABLE songs ADD COLUMN has_lyrics BOOLEAN DEFAULT 0",
+        }
+        for column, sql in columns.items():
+            try:
+                self.cursor.execute(f"SELECT {column} FROM songs LIMIT 1")
+            except Exception:
+                try:
+                    self.cursor.execute(sql)
+                except Exception:
+                    pass
+        self.conn.commit()
+
+    def ensure_sqlite_performance(self):
+        try:
+            self.cursor.execute("PRAGMA journal_mode=WAL")
+            self.cursor.execute("PRAGMA synchronous=NORMAL")
+        except Exception:
+            pass
+
+    def ensure_indexes(self):
+        indexes = [
+            "CREATE INDEX IF NOT EXISTS idx_songs_video_id ON songs(videoId)",
+            "CREATE INDEX IF NOT EXISTS idx_songs_title ON songs(title)",
+            "CREATE INDEX IF NOT EXISTS idx_songs_artist ON songs(artist)",
+            "CREATE INDEX IF NOT EXISTS idx_songs_path ON songs(path)",
+        ]
+        for sql in indexes:
+            try:
+                self.cursor.execute(sql)
+            except Exception:
+                pass
+        self.conn.commit()

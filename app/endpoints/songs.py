@@ -1,44 +1,22 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 from fastapi.responses import JSONResponse
-from app.logic.metadata.add_metadata import verify_metadata
-from app.logic.color_extractor import extract_color_palette
 from app.config.stałe import Parameters
+from app.logic.library_scanner import inject_lyrics_text, scan_music_files
 import os
 
 router = APIRouter(prefix="/api", tags=["songs"])
 
 
 @router.get("/songs")
-async def get_songs():
+async def get_songs(includeLyrics: bool = Query(False, description="Include full lyrics text in each song")):
     try:
         download_dir = Parameters.get_download_dir()
         if not os.path.isdir(download_dir):
             return JSONResponse({"songs": [], "message": "Download directory not found"})
 
-        songs = []
-        supported_extensions = (".mp3", ".mp4", ".m4a", ".flac", ".ogg", ".wav")
-
-        for filename in os.listdir(download_dir):
-            if filename.lower().endswith(supported_extensions):
-                file_path = os.path.join(download_dir, filename)
-                ext = os.path.splitext(filename)[1].lstrip(".").lower()
-                meta = verify_metadata(file_path, ext)
-
-                cover = meta.get("cover", "")
-                color_data = extract_color_palette(cover) if cover else {"dominantColor": None, "colorPalette": None}
-
-                song_entry = {
-                    "filename": filename,
-                    "title": meta.get("title", os.path.splitext(filename)[0]),
-                    "artist": meta.get("artist", "Unknown Artist"),
-                    "videoId": meta.get("videoId", ""),
-                    "cover": cover,
-                    "dominantColor": color_data.get("dominantColor"),
-                    "colorPalette": color_data.get("colorPalette"),
-                    "format": ext,
-                    "size_bytes": os.path.getsize(file_path),
-                }
-                songs.append(song_entry)
+        songs = scan_music_files(download_dir)
+        if includeLyrics:
+            songs = inject_lyrics_text(songs)
 
         # Sort by title
         songs.sort(key=lambda s: s["title"].lower())

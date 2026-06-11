@@ -1,5 +1,4 @@
 import json
-import os
 import re
 import logging
 from typing import Optional
@@ -10,8 +9,10 @@ from googleapiclient.errors import HttpError
 
 from app.config.stałe import Parameters
 from app.logic.color_extractor import extract_color_palette
+from app.logic.color_cache import get_cached_color, set_cached_color
 from app.logic.api_handler.handle_playlist_search import get_playlist_songs_paginated
 from app.logic.api_handler.handle_yt_service import create_youtube_service
+from app.logic.library_scanner import ensure_playlist_and_db, inject_lyrics_text
 from app.models.yt_convert.convert_video_item import convert_video_item as convert_youtube_item_to_song
 
 log = logging.getLogger(__name__)
@@ -185,11 +186,13 @@ def _enrich_songs_with_colors(songs: list) -> list:
     for song in songs:
         if song.get("cover"):
             try:
-                color_data = extract_color_palette(song["cover"])
+                color_data = get_cached_color(song["cover"])
+                if color_data is None:
+                    color_data = extract_color_palette(song["cover"])
+                    set_cached_color(song["cover"], color_data)
                 song["dominantColor"] = color_data.get("dominantColor")
                 song["colorPalette"] = color_data.get("colorPalette")
-            except Exception as e:
-                log.warning(f"Could not extract colors for {song.get('title')}: {e}")
+            except Exception:
                 song["dominantColor"] = None
                 song["colorPalette"] = None
         else:
@@ -219,37 +222,26 @@ def _inject_lyrics(songs: list[dict]) -> list[dict]:
 
 
 @router.get("/playlists/all-songs")
-def get_all_songs_playlist():
+def get_all_songs_playlist(includeLyrics: bool = Query(False, description="Include full lyrics text in each song")):
     """Zwraca całą zawartość pliku playlist.json z folderu 'All Songs' z usuniętymi duplikatami i kolorami okładek."""
-    download_dir = Parameters.get_download_dir()
-    playlist_folder = os.path.join(download_dir, "All Songs")
-    playlist_file = os.path.join(playlist_folder, "playlist.json")
-
-    if not os.path.isfile(playlist_file):
-        raise HTTPException(
-            status_code=404,
-            detail=f"Playlist 'All Songs' nie istnieje: {playlist_file}"
-        )
-
     try:
-        with open(playlist_file, "r", encoding="utf-8") as f:
-            data = json.load(f)
-
-        data = _deduplicate_songs(data)
-        data["songs"] = _enrich_songs_with_colors(data.get("songs", []))
-        return data
+        data = ensure_playlist_and_db()
     except json.JSONDecodeError as e:
-        log.error("Błąd parsowania playlist.json: %s", e)
         raise HTTPException(
             status_code=500,
             detail=f"Nieprawidłowy format JSON w playlist.json: {str(e)}"
         )
     except OSError as e:
-        log.error("Błąd odczytu playlist.json: %s", e)
         raise HTTPException(
             status_code=500,
             detail=f"Nie można odczytać playlist.json: {str(e)}"
         )
+
+    data = _deduplicate_songs(data)
+    data["songs"] = _enrich_songs_with_colors(data.get("songs", []))
+    if includeLyrics:
+        data["songs"] = inject_lyrics_text(data["songs"])
+    return data
 
 
 @router.post("/playlists/rescan")
@@ -260,7 +252,7 @@ def rescan_library():
     """
     from app.logic.library_scanner import scan_music_files, build_and_save_playlist, sync_songs_to_db
 
-    songs = scan_music_files()
+    songs = scan_music_files(force=True)
     data = build_and_save_playlist(songs)
     inserted = sync_songs_to_db(songs)
 

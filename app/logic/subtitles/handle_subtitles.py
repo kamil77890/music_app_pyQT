@@ -3,6 +3,8 @@ import os
 import srt
 from mutagen.id3 import ID3, SYLT, Encoding
 
+from app.logic.atomic import atomic_write_text
+
 
 def parse_srt_to_sync(srt_path):
     with open(srt_path, 'r', encoding='utf-8') as f:
@@ -40,8 +42,7 @@ def convert_srt_to_txt(srt_path: str, output_path: str = None) -> str:
                   for sub in subtitles if sub.content.strip()]
     full_text = "\n".join(text_lines)
 
-    with open(output_path, 'w', encoding='utf-8') as f:
-        f.write(full_text)
+    atomic_write_text(output_path, full_text)
 
     os.remove(srt_path)
 
