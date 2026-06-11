@@ -10,11 +10,11 @@ from mutagen.id3 import ID3, TIT2, TPE1, TCON, ID3NoHeaderError
 from mutagen.mp4 import MP4
 
 from app.config.stałe import Parameters
-from app.logic.subtitles.handle_subtitles import embed_sylt, parse_srt_to_sync, convert_srt_to_txt
 from app.logic.downloader.filename import sanitize_filename
 from app.logic.downloader.cleanup import cleanup_temp_files
 from app.logic.downloader.yt_dlp_client import download_audio
 from app.logic.metadata.add_cover import embed_image_mp3, embed_image_mp4
+from app.logic.subtitles.pipeline import process_song_subtitles
 
 log = logging.getLogger(__name__)
 
@@ -158,13 +158,9 @@ def process_metadata(
         log.error("process_metadata error: %s", e)
 
 
-def process_subtitles(file_path: str, srt_path: str) -> None:
-    if not os.path.exists(srt_path):
-        return
+def process_subtitles(file_path: str, video_id: str, basename: str) -> None:
     try:
-        sync = parse_srt_to_sync(srt_path)
-        embed_sylt(file_path, sync)
-        convert_srt_to_txt(srt_path)
+        process_song_subtitles(file_path, video_id, basename)
     except Exception as e:
         log.warning("Failed to process subtitles: %s", e)
 
@@ -210,8 +206,7 @@ def download_song(videoId: str, id: str = "0", format_ext: str = "mp3", base_pat
 
         process_metadata(final_path, format_ext, clean_video_id, meta=track)
 
-        srt_path = os.path.join(base, f"{final_name}.en.srt")
-        process_subtitles(final_path, srt_path)
+        process_subtitles(final_path, clean_video_id, final_name)
         cleanup_temp_files(os.path.join(base, final_name))
 
         return final_path
@@ -256,8 +251,8 @@ def download_playlist(playlistId: str, audio_format: str = "mp3") -> str:
             if not os.path.exists(file_path):
                 continue
             process_metadata(file_path, audio_format, track.get("id", ""), meta=track)
-            srt_path = os.path.splitext(file_path)[0] + ".en.srt"
-            process_subtitles(file_path, srt_path)
+            basename = os.path.splitext(os.path.basename(file_path))[0]
+            process_subtitles(file_path, track.get("id", ""), basename)
             processed_files.append(file_path)
 
         if not processed_files:
