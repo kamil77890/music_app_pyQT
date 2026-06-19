@@ -389,6 +389,28 @@ def test_get_classifier_uses_fallback_when_ollama_model_missing(monkeypatch):
     assert isinstance(classifier, FallbackClassifier)
 
 
+def test_default_local_ai_config_uses_qwen3_1_7b(monkeypatch):
+    from app.logic.local_ai.config import get_config
+
+    monkeypatch.delenv("LOCAL_AI_MODEL", raising=False)
+    monkeypatch.delenv("LOCAL_AI_TIMEOUT_SECONDS", raising=False)
+    monkeypatch.delenv("LOCAL_AI_BATCH_SIZE", raising=False)
+
+    config = get_config()
+
+    assert config.model == "qwen3:1.7b"
+    assert config.timeout_seconds == 45
+    assert config.batch_size == 5
+
+
+def test_start_script_suggests_pull_qwen3_1_7b():
+    script = Path(__file__).resolve().parents[2] / "scripts" / "start-local-ai-metadata.sh"
+    source = script.read_text(encoding="utf-8")
+
+    assert 'MODEL="${LOCAL_AI_MODEL:-qwen3:1.7b}"' in source
+    assert "Run: ollama pull qwen3:1.7b" in source
+
+
 def test_production_classifier_has_no_hardcoded_music_mappings():
     classifier_dir = Path(__file__).resolve().parents[1] / "logic" / "local_ai"
     production_files = [

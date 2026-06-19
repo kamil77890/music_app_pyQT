@@ -23,8 +23,8 @@ class LocalAIConfig:
     metadata_enabled: bool = True
     provider: str = "ollama"
     ollama_url: str = "http://localhost:11434"
-    model: str = "qwen3.5:latest"
-    timeout_seconds: int = 60
+    model: str = "qwen3:1.7b"
+    timeout_seconds: int = 45
     batch_size: int = 5
     cache_path: str = "data/local_ai_metadata_cache.json"
 
@@ -34,8 +34,8 @@ def get_config() -> LocalAIConfig:
         metadata_enabled=_env_bool("LOCAL_AI_METADATA_ENABLED", True),
         provider=os.environ.get("LOCAL_AI_PROVIDER", "ollama").strip().lower() or "ollama",
         ollama_url=os.environ.get("LOCAL_AI_OLLAMA_URL", "http://localhost:11434").strip() or "http://localhost:11434",
-        model=os.environ.get("LOCAL_AI_MODEL", "qwen3.5:latest").strip(),
-        timeout_seconds=_env_int("LOCAL_AI_TIMEOUT_SECONDS", 60) or 60,
+        model=os.environ.get("LOCAL_AI_MODEL", "qwen3:1.7b").strip(),
+        timeout_seconds=_env_int("LOCAL_AI_TIMEOUT_SECONDS", 45) or 45,
         batch_size=_env_int("LOCAL_AI_BATCH_SIZE", 5) or 5,
         cache_path=os.environ.get("LOCAL_AI_CACHE_PATH", "data/local_ai_metadata_cache.json").strip() or "data/local_ai_metadata_cache.json",
     )
