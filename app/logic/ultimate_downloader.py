@@ -17,7 +17,7 @@ from app.logic.downloader.cleanup import cleanup_temp_files
 from app.logic.downloader.yt_dlp_client import download_audio
 from app.logic.jellyfin_library import saveTrackToLibrary
 from app.logic.metadata.add_cover import embed_image_mp3, embed_image_mp4
-from app.logic.subtitles.pipeline import process_song_subtitles
+from app.logic.subtitles.pipeline import process_song_subtitles, subtitles_enabled
 
 log = logging.getLogger(__name__)
 
@@ -178,6 +178,10 @@ def process_metadata(
 
 
 def process_subtitles(file_path: str, video_id: str, basename: str) -> None:
+    if not subtitles_enabled():
+        log.debug("Subtitles disabled; skipping subtitles for %s", video_id)
+        return
+
     try:
         process_song_subtitles(file_path, video_id, basename)
     except Exception as e:
@@ -289,6 +293,12 @@ def download_song(videoId: str, id: str = "0", format_ext: str = "mp3", base_pat
                 status_code=502,
                 detail="YouTube blocked the download request. Try updating yt-dlp or using browser cookies.",
                 headers={"X-Error-Code": "YTDLP_FORBIDDEN"},
+            )
+        if "429" in str(e) or "Too Many Requests" in str(e):
+            raise HTTPException(
+                status_code=502,
+                detail="YouTube rate-limited the download request. Try again later or use browser cookies.",
+                headers={"X-Error-Code": "YTDLP_RATE_LIMITED"},
             )
         raise HTTPException(status_code=500, detail=str(e))
 

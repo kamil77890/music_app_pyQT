@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse
 
 from app.config.jellyfin_config import JellyfinConfig
 from app.config.stałe import Parameters
+from app.endpoints.api_errors import api_error
 from app.logic.jellyfin_library import saveTrackToLibrary
 from app.logic.library_scanner import (
     build_and_save_playlist,
@@ -42,7 +43,7 @@ def _cleanup_temp_file(path: str) -> None:
 
 @router.post("/upload")
 async def upload_songs(
-    files: list[UploadFile] = File(...),
+    files: list[UploadFile] | None = File(default=None),
     rescan: bool = Query(True, description="Rebuild playlist.json after upload"),
 ):
     """Accept one or more audio files and save them to the Jellyfin library.
@@ -56,6 +57,9 @@ async def upload_songs(
     temp_dir = JellyfinConfig.get_temp_dir()
     os.makedirs(temp_dir, exist_ok=True)
     keep_legacy = JellyfinConfig.get_keep_legacy_copy()
+
+    if not files:
+        return api_error("MISSING_FIELD", "No upload file provided.", 400)
 
     saved: list[dict] = []
     errors: list[dict] = []
@@ -94,9 +98,16 @@ async def upload_songs(
                     }
                     try:
                         jellyfin_path = saveTrackToLibrary(temp_path, jellyfin_meta, copy=True)
+                    except PermissionError as jellyfin_err:
+                        log.warning("Permission denied while saving upload to Jellyfin library: %s", jellyfin_err)
+                        errors.append({"filename": filename, "error": "Permission denied while saving to music library"})
+                        _cleanup_temp_file(temp_path)
+                        continue
                     except Exception as jellyfin_err:
                         log.warning("Failed to save to Jellyfin library: %s", jellyfin_err)
-                        jellyfin_path = temp_path
+                        errors.append({"filename": filename, "error": "Failed to save to music library"})
+                        _cleanup_temp_file(temp_path)
+                        continue
 
                     # Legacy backup: copy to the original download directory
                     if keep_legacy:
@@ -119,10 +130,18 @@ async def upload_songs(
                         "jellyfin_path": jellyfin_path,
                     })
         except Exception as exc:
-            log.exception("Failed to save %s", filename)
+            log.warning("Failed to save %s: %s", filename, exc)
             errors.append({"filename": filename, "error": str(exc)})
             if os.path.exists(temp_path):
                 os.remove(temp_path)
+
+    if not saved and errors:
+        only_invalid_format = all("Unsupported format" in err.get("error", "") for err in errors)
+        if only_invalid_format:
+            return api_error("INVALID_FILE_FORMAT", "Unsupported audio file format.", 400, errors=errors)
+        permission_denied = any("Permission denied" in err.get("error", "") for err in errors)
+        code = "PERMISSION_DENIED" if permission_denied else "UPLOAD_FAILED"
+        return api_error(code, errors[0].get("error", "Upload failed."), 500, errors=errors)
 
     if rescan and saved:
         songs = scan_music_files()

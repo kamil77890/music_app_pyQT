@@ -7,6 +7,7 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse, FileResponse
 
 from app.config.jellyfin_config import JellyfinConfig
+from app.endpoints.api_errors import api_error
 from app.logic.library_scanner import scan_music_files
 from app.logic.ultimate_downloader import download_song, extract_video_id
 
@@ -15,6 +16,20 @@ _YT_VIDEO_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{11}$")
 log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["library-api"])
+
+
+def _download_error_code(exc: HTTPException) -> str:
+    header_code = (exc.headers or {}).get("X-Error-Code")
+    if header_code:
+        return header_code
+    detail = str(exc.detail or "")
+    if "403" in detail or "blocked" in detail or "Forbidden" in detail:
+        return "YTDLP_FORBIDDEN"
+    if "429" in detail or "rate-limit" in detail or "Too Many Requests" in detail:
+        return "YTDLP_RATE_LIMITED"
+    if exc.status_code == 422 or "without an audio file" in detail or "file not created" in detail:
+        return "NO_OUTPUT_FILE"
+    return "INTERNAL_ERROR"
 
 
 @router.get("/health")
@@ -26,11 +41,11 @@ async def health():
 async def download_to_library(body: dict = Body(...)):
     url = (body.get("url") or "").strip()
     if not url:
-        return JSONResponse({"ok": False, "error": "Missing 'url' field"}, status_code=400)
+        return api_error("MISSING_FIELD", "Missing 'url' field.", 400)
 
     candidate_id = extract_video_id(url)
     if not _YT_VIDEO_ID_RE.match(candidate_id):
-        return JSONResponse({"ok": False, "error": "Could not extract valid YouTube video ID from URL"}, status_code=400)
+        return api_error("INVALID_URL", "This is not a valid YouTube URL.", 400)
     video_id = candidate_id
 
     try:
@@ -54,11 +69,13 @@ async def download_to_library(body: dict = Body(...)):
             "jellyfin_path": jellyfin_path,
             "videoId": video_id,
         }
-    except HTTPException:
-        raise
+    except HTTPException as exc:
+        error_code = _download_error_code(exc)
+        message = str(exc.detail) if exc.detail else "Request failed."
+        return api_error(error_code, message, exc.status_code, detail=message)
     except Exception as exc:
         log.warning("download-library failed for %s: %s", video_id, exc)
-        return JSONResponse({"ok": False, "status": "failed", "error_code": "INTERNAL_ERROR", "message": str(exc)}, status_code=500)
+        return api_error("INTERNAL_ERROR", str(exc), 500)
 
 
 @router.get("/library/songs")
@@ -99,10 +116,10 @@ async def library_stream(path: str = Query(..., description="Absolute path to fi
     norm_path = os.path.normpath(os.path.realpath(path))
 
     if not norm_path.startswith(norm_lib + "/") and norm_path != norm_lib:
-        raise HTTPException(status_code=403, detail="Path not allowed")
+        return api_error("PATH_TRAVERSAL_BLOCKED", "Path is outside the music library.", 403)
 
     if not os.path.isfile(norm_path):
-        raise HTTPException(status_code=404, detail="File not found")
+        return api_error("FILE_NOT_FOUND", "File not found.", 404)
 
     filename = os.path.basename(norm_path)
     return FileResponse(path=norm_path, filename=filename, media_type="application/octet-stream")

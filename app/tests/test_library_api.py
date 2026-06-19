@@ -130,6 +130,29 @@ class TestDownloadLibraryErrorHandling:
         resp = client.post("/api/download-library", json={"url": "invalid"})
         assert resp.headers.get("content-type", "").startswith("application/json")
 
+    def test_subtitle_429_does_not_make_download_library_fail(self, monkeypatch, tmp_path):
+        import app.endpoints.library_api as lib_api
+        from app.logic import ultimate_downloader
+
+        audio_path = tmp_path / "saved.mp3"
+        audio_path.write_bytes(b"fake audio")
+        monkeypatch.setenv("SUBTITLES_ENABLED", "true")
+
+        def _mock_subtitles(*args):
+            raise Exception("HTTP Error 429: Too Many Requests")
+
+        def _mock_download_song(videoId, id="0", format_ext="mp3", base_path=None):
+            ultimate_downloader.process_subtitles(str(audio_path), videoId, "saved")
+            return {"jellyfin_path": str(audio_path), "filepath": str(audio_path)}
+
+        monkeypatch.setattr(ultimate_downloader, "process_song_subtitles", _mock_subtitles)
+        monkeypatch.setattr(lib_api, "download_song", _mock_download_song)
+
+        resp = client.post("/api/download-library", json={"url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ"})
+
+        assert resp.status_code == 200
+        assert resp.json()["ok"] is True
+
 
 class TestLibrarySongsEndpoint:
     def test_library_songs_returns_json(self, monkeypatch, tmp_path):

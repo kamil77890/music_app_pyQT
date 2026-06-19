@@ -1,8 +1,11 @@
+import logging
 from types import SimpleNamespace
 
 
 def test_process_song_subtitles_uses_youtube_caption(monkeypatch, tmp_path):
     from app.logic.subtitles import pipeline
+
+    monkeypatch.setenv("SUBTITLES_ENABLED", "true")
 
     audio_path = tmp_path / "song.mp3"
     audio_path.write_bytes(b"fake audio")
@@ -40,6 +43,8 @@ def test_process_song_subtitles_uses_youtube_caption(monkeypatch, tmp_path):
 def test_process_song_subtitles_falls_back_to_whisper(monkeypatch, tmp_path):
     from app.logic.subtitles import pipeline
 
+    monkeypatch.setenv("SUBTITLES_ENABLED", "true")
+
     audio_path = tmp_path / "song.mp3"
     audio_path.write_bytes(b"fake audio")
 
@@ -68,6 +73,8 @@ def test_process_song_subtitles_falls_back_to_whisper(monkeypatch, tmp_path):
 def test_process_song_subtitles_returns_none_when_everything_fails(monkeypatch, tmp_path):
     from app.logic.subtitles import pipeline
 
+    monkeypatch.setenv("SUBTITLES_ENABLED", "true")
+
     audio_path = tmp_path / "song.mp3"
     audio_path.write_bytes(b"fake audio")
 
@@ -84,8 +91,141 @@ def test_process_song_subtitles_returns_none_when_everything_fails(monkeypatch, 
 def test_preferred_languages_uses_env_order(monkeypatch):
     from app.logic.subtitles import pipeline
 
-    monkeypatch.setenv("SUBTITLE_LANGS", "pl, en ,de")
+    monkeypatch.setenv("SUBTITLES_LANG", "pl, en ,de")
     assert pipeline._preferred_languages() == ["pl", "en", "de"]
+
+
+def test_process_song_subtitles_skips_when_disabled_by_default(monkeypatch, tmp_path):
+    from app.logic.subtitles import pipeline
+
+    audio_path = tmp_path / "song.mp3"
+    audio_path.write_bytes(b"fake audio")
+
+    called = {"youtube": False, "whisper": False}
+    monkeypatch.delenv("SUBTITLES_ENABLED", raising=False)
+    monkeypatch.setattr(
+        pipeline,
+        "_fetch_youtube_subtitles",
+        lambda *args: called.__setitem__("youtube", True),
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "_transcribe_with_whisper",
+        lambda *args: called.__setitem__("whisper", True),
+    )
+
+    assert pipeline.process_song_subtitles(str(audio_path), "abc123", "song") is None
+    assert called == {"youtube": False, "whisper": False}
+
+
+def test_fetch_youtube_subtitles_429_is_non_fatal_and_cached(monkeypatch, tmp_path, caplog):
+    from app.logic.subtitles import pipeline
+
+    pipeline.FAILED_SUBTITLE_VIDEO_IDS.clear()
+    monkeypatch.setenv("SUBTITLES_ENABLED", "true")
+    monkeypatch.setenv("SUBTITLES_RETRY_ON_429", "false")
+    monkeypatch.setattr(pipeline, "_caption_language_order", lambda video_id: ["pl"])
+
+    class FakeYoutubeDL:
+        calls = 0
+
+        def __init__(self, opts):
+            self.opts = opts
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def download(self, urls):
+            FakeYoutubeDL.calls += 1
+            raise Exception("ERROR: Unable to download video subtitles for 'pl': HTTP Error 429: Too Many Requests")
+
+    monkeypatch.setattr(pipeline, "YoutubeDL", FakeYoutubeDL)
+
+    with caplog.at_level(logging.WARNING):
+        assert pipeline._fetch_youtube_subtitles("abc123", tmp_path, "song") is None
+
+    assert "abc123" in pipeline.FAILED_SUBTITLE_VIDEO_IDS
+    assert FakeYoutubeDL.calls == 1
+    assert "YouTube rate-limited subtitle fetch for videoId=abc123; skipping subtitles for this session." in caplog.text
+
+    caplog.clear()
+    with caplog.at_level(logging.INFO):
+        assert pipeline._fetch_youtube_subtitles("abc123", tmp_path, "song") is None
+    assert FakeYoutubeDL.calls == 1
+    assert "Skipping subtitles for abc123; previous subtitle fetch failed." in caplog.text
+
+
+def test_fetch_youtube_subtitles_retries_429_once_then_skips(monkeypatch, tmp_path):
+    from app.logic.subtitles import pipeline
+
+    pipeline.FAILED_SUBTITLE_VIDEO_IDS.clear()
+    monkeypatch.setenv("SUBTITLES_ENABLED", "true")
+    monkeypatch.setenv("SUBTITLES_RETRY_ON_429", "true")
+    monkeypatch.setenv("SUBTITLES_MAX_RETRIES", "1")
+    monkeypatch.setenv("SUBTITLES_429_BACKOFF_SECONDS", "0")
+    monkeypatch.setattr(pipeline, "_caption_language_order", lambda video_id: ["pl"])
+    monkeypatch.setattr(pipeline.time, "sleep", lambda seconds: None)
+
+    class FakeYoutubeDL:
+        calls = 0
+
+        def __init__(self, opts):
+            self.opts = opts
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def download(self, urls):
+            FakeYoutubeDL.calls += 1
+            raise Exception("HTTP Error 429: Too Many Requests")
+
+    monkeypatch.setattr(pipeline, "YoutubeDL", FakeYoutubeDL)
+
+    assert pipeline._fetch_youtube_subtitles("retry123", tmp_path, "song") is None
+    assert FakeYoutubeDL.calls == 2
+    assert "retry123" in pipeline.FAILED_SUBTITLE_VIDEO_IDS
+
+
+def test_caption_language_lookup_429_is_cached_and_skips_download(monkeypatch, tmp_path, caplog):
+    from app.logic.subtitles import pipeline
+
+    pipeline.FAILED_SUBTITLE_VIDEO_IDS.clear()
+    monkeypatch.setenv("SUBTITLES_ENABLED", "true")
+
+    def fail_lookup(video_id):
+        raise Exception("HTTP Error 429: Too Many Requests")
+
+    monkeypatch.setattr(pipeline, "_available_caption_languages", fail_lookup)
+
+    class FakeYoutubeDL:
+        calls = 0
+
+        def __init__(self, opts):
+            self.opts = opts
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def download(self, urls):
+            FakeYoutubeDL.calls += 1
+
+    monkeypatch.setattr(pipeline, "YoutubeDL", FakeYoutubeDL)
+
+    with caplog.at_level(logging.WARNING):
+        assert pipeline._fetch_youtube_subtitles("lookup429", tmp_path, "song") is None
+
+    assert "lookup429" in pipeline.FAILED_SUBTITLE_VIDEO_IDS
+    assert FakeYoutubeDL.calls == 0
+    assert "YouTube rate-limited subtitle fetch for videoId=lookup429; skipping subtitles for this session." in caplog.text
 
 
 def test_transcribe_with_whisper_uses_env_configuration(monkeypatch, tmp_path):
@@ -129,6 +269,8 @@ def test_transcribe_with_whisper_uses_env_configuration(monkeypatch, tmp_path):
 def test_ultimate_downloader_process_subtitles_delegates(monkeypatch, tmp_path):
     from app.logic import ultimate_downloader
 
+    monkeypatch.setenv("SUBTITLES_ENABLED", "true")
+
     audio_path = tmp_path / "song.mp3"
     audio_path.write_bytes(b"fake audio")
     called = {}
@@ -147,3 +289,22 @@ def test_ultimate_downloader_process_subtitles_delegates(monkeypatch, tmp_path):
         "video_id": "abc123",
         "basename": "song",
     }
+
+
+def test_ultimate_downloader_process_subtitles_skips_when_disabled(monkeypatch, tmp_path):
+    from app.logic import ultimate_downloader
+
+    monkeypatch.delenv("SUBTITLES_ENABLED", raising=False)
+    audio_path = tmp_path / "song.mp3"
+    audio_path.write_bytes(b"fake audio")
+    called = {"subtitles": False}
+
+    monkeypatch.setattr(
+        ultimate_downloader,
+        "process_song_subtitles",
+        lambda *args: called.__setitem__("subtitles", True),
+    )
+
+    ultimate_downloader.process_subtitles(str(audio_path), "abc123", "song")
+
+    assert called == {"subtitles": False}

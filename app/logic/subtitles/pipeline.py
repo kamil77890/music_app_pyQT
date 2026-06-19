@@ -1,6 +1,7 @@
 import datetime as dt
 import logging
 import os
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
@@ -13,6 +14,22 @@ from app.logic.subtitles.handle_subtitles import embed_sylt, parse_srt_to_sync
 
 log = logging.getLogger(__name__)
 
+FAILED_SUBTITLE_VIDEO_IDS: set[str] = set()
+
+
+class _SubtitleYoutubeDLLogger:
+    def debug(self, msg):
+        log.debug("yt-dlp subtitles: %s", msg)
+
+    def warning(self, msg):
+        log.warning("yt-dlp subtitles: %s", msg)
+
+    def error(self, msg):
+        if _is_429_error(msg):
+            log.debug("yt-dlp subtitles rate-limit message suppressed: %s", msg)
+            return
+        log.error("yt-dlp subtitles: %s", msg)
+
 
 @dataclass(frozen=True)
 class SubtitleResult:
@@ -22,9 +39,29 @@ class SubtitleResult:
 
 
 def _preferred_languages() -> list[str]:
-    raw = os.environ.get("SUBTITLE_LANGS", "pl,en,en-US")
+    raw = os.environ.get("SUBTITLES_LANG") or os.environ.get("SUBTITLE_LANGS", "pl")
     langs = [lang.strip() for lang in raw.split(",") if lang.strip()]
-    return langs or ["pl", "en", "en-US"]
+    return langs or ["pl"]
+
+
+def subtitles_enabled() -> bool:
+    return os.environ.get("SUBTITLES_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _retry_on_429_enabled() -> bool:
+    return os.environ.get("SUBTITLES_RETRY_ON_429", "true").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _int_env(name: str, default: int) -> int:
+    try:
+        return max(int(os.environ.get(name, str(default))), 0)
+    except ValueError:
+        return default
+
+
+def _is_429_error(exc) -> bool:
+    text = str(exc)
+    return "429" in text or "Too Many Requests" in text
 
 
 def _existing_srt(base_dir: Path, basename: str, languages: Iterable[str]) -> Path | None:
@@ -45,10 +82,15 @@ def _available_caption_languages(video_id: str) -> list[str]:
         "noplaylist": True,
         "nocheckcertificate": True,
         "http_headers": {"User-Agent": "Mozilla/5.0"},
+        "logger": _SubtitleYoutubeDLLogger(),
     }
     cookie_file = _find_cookie_file()
     if cookie_file:
         opts["cookiefile"] = cookie_file
+
+    cookies_from_browser = os.environ.get("YTDLP_COOKIES_FROM_BROWSER", "")
+    if cookies_from_browser:
+        opts["cookiesfrombrowser"] = (cookies_from_browser,)
 
     with YoutubeDL(opts) as ydl:
         info = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
@@ -70,6 +112,13 @@ def _caption_language_order(video_id: str) -> list[str]:
     try:
         available = _available_caption_languages(video_id)
     except Exception as exc:
+        if _is_429_error(exc):
+            FAILED_SUBTITLE_VIDEO_IDS.add(video_id)
+            log.warning(
+                "YouTube rate-limited subtitle fetch for videoId=%s; skipping subtitles for this session.",
+                video_id,
+            )
+            return []
         log.warning("Caption language lookup failed for %s: %s", video_id, exc)
         return preferred
 
@@ -82,7 +131,14 @@ def _fetch_youtube_subtitles(video_id: str, base_dir: Path, basename: str) -> Pa
     if not video_id:
         return None
 
+    if video_id in FAILED_SUBTITLE_VIDEO_IDS:
+        log.info("Skipping subtitles for %s; previous subtitle fetch failed.", video_id)
+        return None
+
     languages = _caption_language_order(video_id)
+    if video_id in FAILED_SUBTITLE_VIDEO_IDS:
+        return None
+
     opts: dict = {
         "quiet": True,
         "no_warnings": True,
@@ -96,17 +152,39 @@ def _fetch_youtube_subtitles(video_id: str, base_dir: Path, basename: str) -> Pa
         "nocheckcertificate": True,
         "postprocessors": [{"key": "FFmpegSubtitlesConvertor", "format": "srt"}],
         "http_headers": {"User-Agent": "Mozilla/5.0"},
+        "logger": _SubtitleYoutubeDLLogger(),
     }
     cookie_file = _find_cookie_file()
     if cookie_file:
         opts["cookiefile"] = cookie_file
 
-    try:
-        with YoutubeDL(opts) as ydl:
-            ydl.download([f"https://www.youtube.com/watch?v={video_id}"])
-    except Exception as exc:
-        log.warning("Subtitle fetch failed for %s: %s", video_id, exc)
-        return None
+    cookies_from_browser = os.environ.get("YTDLP_COOKIES_FROM_BROWSER", "")
+    if cookies_from_browser:
+        opts["cookiesfrombrowser"] = (cookies_from_browser,)
+
+    max_retries = _int_env("SUBTITLES_MAX_RETRIES", 1) if _retry_on_429_enabled() else 0
+    backoff_seconds = _int_env("SUBTITLES_429_BACKOFF_SECONDS", 5)
+    attempts = max_retries + 1
+
+    for attempt in range(attempts):
+        try:
+            with YoutubeDL(opts) as ydl:
+                ydl.download([f"https://www.youtube.com/watch?v={video_id}"])
+            break
+        except Exception as exc:
+            if _is_429_error(exc):
+                if attempt < max_retries:
+                    time.sleep(backoff_seconds)
+                    continue
+                FAILED_SUBTITLE_VIDEO_IDS.add(video_id)
+                log.warning(
+                    "YouTube rate-limited subtitle fetch for videoId=%s; skipping subtitles for this session.",
+                    video_id,
+                )
+                return None
+
+            log.warning("Subtitle fetch failed for %s: %s", video_id, exc)
+            return None
 
     return _existing_srt(base_dir, basename, languages)
 
@@ -176,6 +254,10 @@ def _transcribe_with_whisper(audio_path: Path):
 
 
 def process_song_subtitles(audio_path: str, video_id: str, basename: str) -> SubtitleResult | None:
+    if not subtitles_enabled():
+        log.debug("Subtitles disabled; skipping subtitles for %s", video_id)
+        return None
+
     audio = Path(audio_path)
     base_dir = audio.parent
 

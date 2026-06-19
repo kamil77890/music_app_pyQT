@@ -1,6 +1,7 @@
 import logging
 from fastapi import APIRouter, Query
-from fastapi.responses import JSONResponse, FileResponse
+from fastapi.responses import FileResponse
+from app.endpoints.api_errors import api_error
 from app.logic.subtitles.subtitles_downloader import get_subtitles_as_txt
 
 log = logging.getLogger(__name__)
@@ -10,7 +11,7 @@ router = APIRouter(tags=["subtitles"])
 @router.get("/subtitles")
 async def get_subtitles_txt(videoId: str = Query(...), lang: str = Query(default="en")):
     if not videoId:
-        return JSONResponse({"error": "Missing videoId"}, status_code=400)
+        return api_error("MISSING_FIELD", "Missing videoId.", 400)
 
     try:
         log.info("Lyrics API request: videoId=%s lang=%s", videoId, lang)
@@ -22,5 +23,9 @@ async def get_subtitles_txt(videoId: str = Query(...), lang: str = Query(default
             media_type="text/plain",
         )
     except Exception as e:
-        log.error("Lyrics API error: videoId=%s error=%s", videoId, e)
-        return JSONResponse({"error": str(e)}, status_code=500)
+        message = str(e)
+        if "429" in message or "Too Many Requests" in message:
+            log.warning("YouTube rate-limited subtitle endpoint fetch for videoId=%s; skipping subtitles.", videoId)
+            return api_error("YTDLP_RATE_LIMITED", "YouTube rate-limited subtitle fetch.", 429)
+        log.warning("Lyrics API error: videoId=%s error=%s", videoId, e)
+        return api_error("INTERNAL_ERROR", message, 500)
