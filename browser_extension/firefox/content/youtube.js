@@ -129,8 +129,8 @@
 
 /* --- button base --- */
 #jf-floating-btn {
-  width: 48px;
-  height: 48px;
+  width: 56px;
+  height: 56px;
   border-radius: 50%;
   display: flex;
   align-items: center;
@@ -221,10 +221,10 @@
 /* --- status dot --- */
 #jf-status-dot {
   position: absolute;
-  bottom: -2px;
-  right: -2px;
-  width: 12px;
-  height: 12px;
+  bottom: -1px;
+  right: -1px;
+  width: 14px;
+  height: 14px;
   border-radius: 50%;
   border: 2.5px solid rgba(15,12,35,0.95);
   transition: background 0.3s ease, box-shadow 0.3s ease;
@@ -247,7 +247,7 @@
 /* --- tooltip --- */
 #jf-tooltip {
   position: absolute;
-  bottom: 56px;
+  bottom: 64px;
   right: 4px;
   padding: 5px 10px;
   border-radius: 6px;
@@ -273,7 +273,7 @@
 /* --- toast --- */
 #jf-toast {
   position: fixed;
-  bottom: 84px;
+  bottom: 92px;
   right: 28px;
   z-index: 99998;
   padding: 10px 16px;
@@ -360,7 +360,7 @@
     const initImg = document.createElement("img");
     initImg.src = MUSIC_ICON_URL;
     initImg.alt = "Save to Jellyfin";
-    initImg.style.cssText = "width:28px;height:28px;border-radius:4px;object-fit:contain;display:block;";
+    initImg.style.cssText = "width:32px;height:32px;border-radius:4px;object-fit:contain;display:block;";
     btnEl.appendChild(initImg);
 
     tooltipEl = document.createElement("span");
@@ -403,7 +403,7 @@
     const img = document.createElement("img");
     img.src = MUSIC_ICON_URL;
     img.alt = "Save to Jellyfin";
-    img.style.cssText = "width:28px;height:28px;border-radius:4px;object-fit:contain;display:block;";
+    img.style.cssText = "width:32px;height:32px;border-radius:4px;object-fit:contain;display:block;";
     btnEl.appendChild(img);
   }
 
