@@ -44,7 +44,7 @@ def test_validator_moves_cyberpunk_genre_to_collection_and_tags():
             "classification_confidence": 0.8,
             "reason": "Cyberpunk franchise piano cover.",
         },
-        track={"title": "Cyberpunk Edgerunners Piano Version", "artist": "Artist"},
+        track={"title": "Cyberpunk Edgerunners OST Piano Version", "artist": "Artist"},
     )
 
     assert result["primary_genre"] == "Soundtrack"
@@ -612,6 +612,9 @@ def test_validator_skars_massacre_rejects_piano():
 
     assert "Piano" not in result["tags"]
     assert result["style"] is None
+    assert result["genre"] == "Unknown Genre"
+    assert result["primary_genre"] == "Unknown Genre"
+    assert "Soundtrack" not in result["tags"]
 
 
 def test_validator_linkin_park_from_the_inside_rejects_instrumental():
@@ -714,3 +717,166 @@ def test_write_audio_metadata_replaces_managed_tags(tmp_path):
     repaired = ID3(str(audio_path))
     assert str(repaired["TCON"].text[0]) == "Pop"
     assert read_audio_file_metadata(str(audio_path))["managed_tags"] == ["Pop"]
+
+
+def test_validator_normalizes_primary_genre_music_to_electronic():
+    from app.logic.local_ai.classification_validator import validate_model_classification
+
+    result = validate_model_classification(
+        {
+            "genre": "Electronic",
+            "primary_genre": "Music",
+            "style": "Nightcore",
+            "subgenre": None,
+            "collection": None,
+            "tags": ["Nightcore"],
+            "mood": [],
+            "metadata_quality": "low",
+            "classification_confidence": 0.9,
+            "reason": "Nightcore remix.",
+        },
+        track={"title": "Nightcore - Hate Me", "artist": "Artist"},
+    )
+
+    assert result["genre"] == "Electronic"
+    assert result["primary_genre"] == "Electronic"
+
+
+def test_validator_music_genre_both_fields_become_unknown():
+    from app.logic.local_ai.classification_validator import validate_model_classification
+
+    result = validate_model_classification(
+        {
+            "genre": "Music",
+            "primary_genre": "Music",
+            "style": None,
+            "subgenre": None,
+            "collection": None,
+            "tags": [],
+            "mood": [],
+            "metadata_quality": "low",
+            "classification_confidence": 0.9,
+            "reason": "Generic music.",
+        },
+        track={"title": "Some Song", "artist": "Artist"},
+    )
+
+    assert result["genre"] == "Unknown Genre"
+    assert result["primary_genre"] == "Unknown Genre"
+
+
+def test_validator_music_genre_adopts_rock_from_primary():
+    from app.logic.local_ai.classification_validator import validate_model_classification
+
+    result = validate_model_classification(
+        {
+            "genre": "Music",
+            "primary_genre": "Rock",
+            "style": None,
+            "subgenre": None,
+            "collection": None,
+            "tags": ["Rock"],
+            "mood": [],
+            "metadata_quality": "medium",
+            "classification_confidence": 0.9,
+            "reason": "Rock track.",
+        },
+        track={"title": "Rock Song", "artist": "Artist"},
+    )
+
+    assert result["genre"] == "Rock"
+    assert result["primary_genre"] == "Rock"
+
+
+def test_validator_pop_confidence_floor_for_clean_broad_genre():
+    from app.logic.local_ai.classification_validator import validate_model_classification
+
+    result = validate_model_classification(
+        {
+            "genre": "Pop",
+            "primary_genre": "Pop",
+            "style": "Piano",
+            "subgenre": None,
+            "collection": None,
+            "tags": ["Piano", "Pop"],
+            "mood": [],
+            "metadata_quality": "medium",
+            "classification_confidence": 0.9,
+            "reason": "Pop video.",
+        },
+        track={"title": "Avril Lavigne - Complicated (Official Video)", "artist": "Avril Lavigne"},
+    )
+
+    assert result["genre"] == "Pop"
+    assert result["classification_confidence"] >= 0.25
+
+
+def test_validator_classical_confidence_floor_for_beethoven():
+    from app.logic.local_ai.classification_validator import validate_model_classification
+
+    result = validate_model_classification(
+        {
+            "genre": "Classical",
+            "primary_genre": "Classical",
+            "style": "Piano",
+            "subgenre": None,
+            "collection": None,
+            "tags": ["Piano", "Classical"],
+            "mood": [],
+            "metadata_quality": "medium",
+            "classification_confidence": 0.9,
+            "reason": "Classical piano.",
+        },
+        track={"title": "Beethoven - Moonlight Sonata Piano", "artist": "Artist"},
+    )
+
+    assert result["genre"] == "Classical"
+    assert result["classification_confidence"] >= 0.25
+
+
+def test_validator_soundtrack_without_proof_becomes_unknown():
+    from app.logic.local_ai.classification_validator import validate_model_classification
+
+    result = validate_model_classification(
+        {
+            "genre": "Soundtrack",
+            "primary_genre": "Soundtrack",
+            "style": None,
+            "subgenre": None,
+            "collection": None,
+            "tags": ["Soundtrack"],
+            "mood": [],
+            "metadata_quality": "medium",
+            "classification_confidence": 0.9,
+            "reason": "Animated music video soundtrack.",
+        },
+        track={"title": "SKARS - Massacre (Animated Music Video)", "artist": "SKARS"},
+    )
+
+    assert result["genre"] == "Unknown Genre"
+    assert result["primary_genre"] == "Unknown Genre"
+    assert "Soundtrack" not in result["tags"]
+
+
+def test_validator_soundtrack_with_ost_proof_stays_soundtrack():
+    from app.logic.local_ai.classification_validator import validate_model_classification
+
+    result = validate_model_classification(
+        {
+            "genre": "Soundtrack",
+            "primary_genre": "Soundtrack",
+            "style": "Piano",
+            "subgenre": None,
+            "collection": None,
+            "tags": ["OST", "Piano"],
+            "mood": [],
+            "metadata_quality": "medium",
+            "classification_confidence": 0.9,
+            "reason": "Anime OST piano.",
+        },
+        track={"title": "Solo Leveling Episode 6 OST Piano", "artist": "Artist"},
+    )
+
+    assert result["genre"] == "Soundtrack"
+    assert result["primary_genre"] == "Soundtrack"
+    assert "OST" in result["tags"] or "Piano" in result["tags"]

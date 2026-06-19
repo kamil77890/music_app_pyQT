@@ -197,8 +197,43 @@ _TAG_NORMALIZATIONS: tuple[tuple[str, str, str | None], ...] = (
     ("electronic", "Electronic", None),
 )
 
+_GENERIC_GENRE_LABELS = frozenset(
+    {
+        "music",
+        "general music",
+        "song",
+        "songs",
+        "audio",
+        "video",
+        "musik",
+        "track",
+        "tracks",
+    }
+)
+
+_CONFIDENT_BROAD_GENRES = frozenset(
+    {
+        "rock",
+        "pop",
+        "electronic",
+        "dance",
+        "soundtrack",
+        "classical",
+        "hip hop",
+        "metal",
+        "jazz",
+        "folk",
+        "ambient",
+        "orchestral",
+    }
+)
+
 _SOUNDTRACK_MARKERS = re.compile(
     r"\b(ost|soundtrack|opening|ending|theme|score)\b|\bop\b|\bed\b",
+    re.IGNORECASE,
+)
+_SOUNDTRACK_PROOF_MARKERS = re.compile(
+    r"\b(ost|soundtrack|opening|ending|score|episode|series)\b|\bop\b|\bed\b|\b(movie|film|anime|game)\b",
     re.IGNORECASE,
 )
 _ROCK_VERSION_MARKER = re.compile(r"\brock version\b", re.IGNORECASE)
@@ -404,10 +439,10 @@ def _tag_is_grounded(
     if tag_norm == "dance":
         return genre_norm == "dance" or primary_norm == "dance" or bool(_DANCE_MARKER.search(haystack_norm))
     if tag_norm in {"ost", "soundtrack"}:
-        return (
-            bool(_SOUNDTRACK_MARKERS.search(haystack_norm))
-            or genre_norm == "soundtrack"
-            or primary_norm == "soundtrack"
+        return bool(_SOUNDTRACK_PROOF_MARKERS.search(haystack_norm)) or (
+            genre_norm == "soundtrack"
+            and primary_norm == "soundtrack"
+            and bool(_SOUNDTRACK_PROOF_MARKERS.search(haystack_norm))
         )
     if tag_norm == "game":
         return bool(_GAME_MARKER.search(haystack_norm))
@@ -480,17 +515,71 @@ def is_style_label(value: Any) -> bool:
     return len(tokens) == 1 and bool(tokens & _STYLE_LABELS)
 
 
+def is_generic_genre_label(value: Any) -> bool:
+    return _normalize_key(value) in _GENERIC_GENRE_LABELS
+
+
 def is_broad_genre(value: Any) -> bool:
     norm = _normalize_key(normalize_genre(value))
     if norm in _GENRE_ALIASES:
         norm = _normalize_key(_GENRE_ALIASES[norm])
     if norm == _normalize_key(UNKNOWN_GENRE):
         return False
+    if is_generic_genre_label(norm):
+        return False
     if is_context_label(norm) or is_style_label(norm):
         return False
     if norm in _BROAD_GENRES:
         return True
     return not is_garbage_genre(value) and len(norm.split()) <= 3
+
+
+def _normalize_generic_genre_fields(genre: str, primary_genre: str) -> tuple[str, str, bool]:
+    changed = False
+    genre_generic = is_generic_genre_label(genre)
+    primary_generic = is_generic_genre_label(primary_genre)
+    genre_valid = is_broad_genre(genre) and genre != UNKNOWN_GENRE and not genre_generic
+    primary_valid = is_broad_genre(primary_genre) and primary_genre != UNKNOWN_GENRE and not primary_generic
+
+    if genre_generic and primary_generic:
+        return UNKNOWN_GENRE, UNKNOWN_GENRE, True
+    if genre_generic and primary_valid:
+        return primary_genre, primary_genre, True
+    if primary_generic and genre_valid:
+        return genre, genre, True
+    if genre_generic:
+        changed = True
+        genre = UNKNOWN_GENRE
+    if primary_generic:
+        changed = True
+        primary_genre = UNKNOWN_GENRE
+    if genre == UNKNOWN_GENRE and primary_valid:
+        genre = primary_genre
+        changed = True
+    if primary_genre == UNKNOWN_GENRE and genre_valid:
+        primary_genre = genre
+        changed = True
+    return genre, primary_genre, changed
+
+
+def _track_has_soundtrack_proof(track: dict[str, Any] | None, *, track_haystack: str | None = None) -> bool:
+    haystack = track_haystack if track_haystack is not None else _track_proof_haystack(track)
+    return bool(_SOUNDTRACK_PROOF_MARKERS.search(_normalize_key(haystack)))
+
+
+def _enforce_soundtrack_genre_proof(
+    *,
+    genre: str,
+    primary_genre: str,
+    tags: list[str],
+    track_haystack: str,
+) -> tuple[str, str, list[str], bool]:
+    if _normalize_key(genre) != "soundtrack" and _normalize_key(primary_genre) != "soundtrack":
+        return genre, primary_genre, tags, False
+    if _SOUNDTRACK_PROOF_MARKERS.search(_normalize_key(track_haystack)):
+        return genre, primary_genre, tags, False
+    cleaned_tags = [tag for tag in tags if _normalize_key(tag) != "soundtrack"]
+    return UNKNOWN_GENRE, UNKNOWN_GENRE, cleaned_tags, True
 
 
 def _normalize_broad_genre(value: Any) -> str:
@@ -513,13 +602,11 @@ def _model_output_suggests_soundtrack(parsed: dict[str, Any]) -> bool:
 
 
 def _track_suggests_soundtrack(track: dict[str, Any] | None) -> bool:
-    if not track:
-        return False
-    return bool(_SOUNDTRACK_MARKERS.search(_track_input_haystack(track)))
+    return _track_has_soundtrack_proof(track)
 
 
 def _suggests_soundtrack(parsed: dict[str, Any], track: dict[str, Any] | None) -> bool:
-    return _model_output_suggests_soundtrack(parsed) or _track_suggests_soundtrack(track)
+    return _track_has_soundtrack_proof(track)
 
 
 def _sanitize_reason(reason: str, track: dict[str, Any] | None, *, sanitized: bool = False) -> tuple[str, bool]:
@@ -685,6 +772,7 @@ def _recalculate_confidence(
     tags_removed: int,
     unsupported_tags_removed: int,
     reason_sanitized: bool,
+    serious_validator_problem: bool = False,
 ) -> float:
     score = 0.0
     if is_broad_genre(genre) and genre != UNKNOWN_GENRE:
@@ -710,6 +798,14 @@ def _recalculate_confidence(
         score = min(score, 0.55)
     if len(tags) <= 1 and genre == UNKNOWN_GENRE:
         score = min(score, 0.55)
+    genre_norm = _normalize_key(genre)
+    if (
+        not serious_validator_problem
+        and genre != UNKNOWN_GENRE
+        and is_broad_genre(genre)
+        and genre_norm in _CONFIDENT_BROAD_GENRES
+    ):
+        score = max(score, 0.25)
     return score
 
 
@@ -750,7 +846,7 @@ def _apply_consistency_fixes(
         genre = primary_genre = "Dance"
         reason_hint = "Jumpstyle tag detected; broad genre set to Dance."
 
-    if style_norm == "piano" and _suggests_soundtrack(parsed, track):
+    if style_norm == "piano" and _track_has_soundtrack_proof(track, track_haystack=track_haystack):
         genre = primary_genre = "Soundtrack"
         reason_hint = "Piano arrangement of media/OST track; broad genre set to Soundtrack."
 
@@ -802,6 +898,10 @@ def validate_model_classification(parsed: dict[str, Any], *, track: dict[str, An
     genre = fix_genre_field(genre)
     primary_genre = fix_genre_field(primary_genre)
 
+    genre, primary_genre, generic_fixed = _normalize_generic_genre_fields(genre, primary_genre)
+    if generic_fixed:
+        genre_fixed = True
+
     if subgenre:
         if (
             is_context_label(subgenre)
@@ -832,12 +932,16 @@ def validate_model_classification(parsed: dict[str, Any], *, track: dict[str, An
         genre = primary_genre
     if primary_genre == UNKNOWN_GENRE and genre != UNKNOWN_GENRE:
         primary_genre = genre
-    if genre == UNKNOWN_GENRE and primary_genre == UNKNOWN_GENRE and _suggests_soundtrack(parsed, track):
+    if genre == UNKNOWN_GENRE and primary_genre == UNKNOWN_GENRE and _track_has_soundtrack_proof(track, track_haystack=track_haystack):
         genre = primary_genre = "Soundtrack"
         genre_fixed = True
     if _normalize_key(primary_genre) == "soundtrack" and genre not in {UNKNOWN_GENRE, "Soundtrack"}:
-        genre = "Soundtrack"
-        genre_fixed = True
+        if _track_has_soundtrack_proof(track, track_haystack=track_haystack):
+            genre = "Soundtrack"
+            genre_fixed = True
+        else:
+            primary_genre = genre
+            genre_fixed = True
 
     tags, updated_style, tags_removed, unsupported_removed = _clean_tags(
         tags,
@@ -889,6 +993,17 @@ def validate_model_classification(parsed: dict[str, Any], *, track: dict[str, An
             ):
                 tags.append(style_tag)
 
+    serious_validator_problem = False
+    genre, primary_genre, tags, soundtrack_rejected = _enforce_soundtrack_genre_proof(
+        genre=genre,
+        primary_genre=primary_genre,
+        tags=tags,
+        track_haystack=track_haystack,
+    )
+    if soundtrack_rejected:
+        genre_fixed = True
+        serious_validator_problem = True
+
     reason, reason_sanitized = _sanitize_reason(str(parsed.get("reason") or ""), track)
     if reason_hint:
         reason = reason_hint
@@ -904,6 +1019,7 @@ def validate_model_classification(parsed: dict[str, Any], *, track: dict[str, An
         tags_removed=tags_removed,
         unsupported_tags_removed=unsupported_removed,
         reason_sanitized=reason_sanitized,
+        serious_validator_problem=serious_validator_problem,
     )
 
     metadata_quality = str(parsed.get("metadata_quality") or "low").lower()
