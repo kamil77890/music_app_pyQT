@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +14,9 @@ from app.logic.local_ai.fallback_classifier import FallbackClassifier
 from app.logic.local_ai.metadata_normalizer import UNKNOWN_GENRE, normalize_album, normalize_genre
 from app.logic.local_ai.ollama_availability import is_ollama_model_available
 from app.logic.local_ai.ollama_classifier import OllamaClassifier
+
+_cache_lock = threading.Lock()
+_cache_state: dict[str, Any] = {"path": "", "data": {}}
 
 
 def _track_cache_key(track: dict[str, Any]) -> str:
@@ -51,6 +55,48 @@ def _save_cache(cache_path: str, cache: dict[str, Any]) -> None:
     path.write_text(json.dumps(cache, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
 
 
+def _load_cache_store_unlocked(cache_path: str) -> dict[str, Any]:
+    if _cache_state["path"] != cache_path:
+        _cache_state["path"] = cache_path
+        _cache_state["data"] = _load_cache(cache_path)
+    return _cache_state["data"]
+
+
+def _get_cached_store(cache_path: str) -> dict[str, Any]:
+    with _cache_lock:
+        return _load_cache_store_unlocked(cache_path)
+
+
+def _persist_cache_store_unlocked(cache_path: str, cache: dict[str, Any]) -> None:
+    _save_cache(cache_path, cache)
+    _cache_state["path"] = cache_path
+    _cache_state["data"] = cache
+
+
+def _persist_cache_store(cache_path: str, cache: dict[str, Any]) -> None:
+    with _cache_lock:
+        _persist_cache_store_unlocked(cache_path, cache)
+
+
+def _strip_cache_meta(entry: dict[str, Any]) -> dict[str, Any]:
+    return {k: v for k, v in entry.items() if k != "_cache_meta"}
+
+
+def _cached_result_if_valid(
+    cached: Any,
+    *,
+    track: dict[str, Any],
+    config: LocalAIConfig,
+) -> dict[str, Any] | None:
+    if not isinstance(cached, dict):
+        return None
+    cache_meta = cached.get("_cache_meta")
+    track_changed = not isinstance(cache_meta, dict) or cache_meta.get("track_hash") != _track_hash(track)
+    if _cache_entry_complete(cached, config=config) and not track_changed:
+        return _strip_cache_meta(cached)
+    return None
+
+
 def _cache_entry_complete(entry: Any, *, config: LocalAIConfig) -> bool:
     if not isinstance(entry, dict):
         return False
@@ -74,9 +120,11 @@ def _cache_entry_complete(entry: Any, *, config: LocalAIConfig) -> bool:
         return False
     if cache_meta.get("classifier_version") != CLASSIFIER_VERSION:
         return False
-    if cache_meta.get("model") != config.model:
+    effective_provider = config.provider if config.metadata_enabled else "fallback"
+    effective_model = config.model if config.metadata_enabled else ""
+    if cache_meta.get("model") != effective_model:
         return False
-    if cache_meta.get("provider") != config.provider:
+    if cache_meta.get("provider") != effective_provider:
         return False
     if cache_meta.get("metadata_enabled") != config.metadata_enabled:
         return False
@@ -111,15 +159,13 @@ def _attach_cache_meta(result: dict[str, Any], *, track: dict[str, Any], config:
 def enrich_track_metadata(track: dict[str, Any], *, force_local_ai: bool = False, use_cache: bool = True) -> dict[str, Any]:
     config = get_config()
     cache_key = _track_cache_key(track)
-    cache: dict[str, Any] | None = None
 
     if use_cache:
-        cache = _load_cache(config.cache_path)
-        cached = cache.get(cache_key)
-        cache_meta = cached.get("_cache_meta") if isinstance(cached, dict) else None
-        track_changed = not isinstance(cache_meta, dict) or cache_meta.get("track_hash") != _track_hash(track)
-        if _cache_entry_complete(cached, config=config) and not track_changed:
-            return {k: v for k, v in cached.items() if k != "_cache_meta"}
+        with _cache_lock:
+            cache = _load_cache_store_unlocked(config.cache_path)
+            cached_result = _cached_result_if_valid(cache.get(cache_key), track=track, config=config)
+            if cached_result is not None:
+                return cached_result
 
     classifier = get_classifier(config=config, force_local_ai=force_local_ai)
     result = classifier.classify(track)
@@ -127,10 +173,13 @@ def enrich_track_metadata(track: dict[str, Any], *, force_local_ai: bool = False
     enriched.update(result)
 
     if use_cache:
-        if cache is None:
-            cache = _load_cache(config.cache_path)
-        cache[cache_key] = _attach_cache_meta(enriched, track=track, config=config)
-        _save_cache(config.cache_path, cache)
+        with _cache_lock:
+            cache = _load_cache_store_unlocked(config.cache_path)
+            cached_result = _cached_result_if_valid(cache.get(cache_key), track=track, config=config)
+            if cached_result is not None:
+                return cached_result
+            cache[cache_key] = _attach_cache_meta(enriched, track=track, config=config)
+            _persist_cache_store_unlocked(config.cache_path, cache)
 
     return enriched
 

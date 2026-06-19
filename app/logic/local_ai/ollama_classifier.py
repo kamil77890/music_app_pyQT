@@ -151,14 +151,36 @@ class OllamaClassifier(LocalMetadataClassifier):
             return fallback
 
     def _call_ollama(self, prompt: str) -> str:
-        payload = json.dumps(
-            {
-                "model": self.model,
-                "messages": [{"role": "user", "content": prompt}],
-                "stream": False,
-                "format": "json",
-            }
-        ).encode("utf-8")
+        base = {
+            "model": self.model,
+            "messages": [{"role": "user", "content": prompt}],
+            "stream": False,
+            "format": "json",
+        }
+        option_sets: list[dict[str, Any] | None] = [
+            {"temperature": 0, "top_p": 0.1, "seed": 42},
+            {"temperature": 0, "top_p": 0.1},
+            None,
+        ]
+        last_error: Exception | None = None
+        for options in option_sets:
+            payload_data = dict(base)
+            if options is not None:
+                payload_data["options"] = options
+            try:
+                return self._post_chat(payload_data)
+            except RuntimeError as exc:
+                last_error = exc
+                message = str(exc).lower()
+                if options is not None and "seed" in options and ("seed" in message or "unknown" in message):
+                    continue
+                raise
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError("Ollama chat request failed.")
+
+    def _post_chat(self, payload_data: dict[str, Any]) -> str:
+        payload = json.dumps(payload_data).encode("utf-8")
         req = request.Request(
             f"{self.base_url}/api/chat",
             data=payload,

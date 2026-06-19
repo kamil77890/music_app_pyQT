@@ -204,6 +204,10 @@ _SOUNDTRACK_MARKERS = re.compile(
 _ROCK_VERSION_MARKER = re.compile(r"\brock version\b", re.IGNORECASE)
 _PIANO_MARKER = re.compile(r"\b(piano|piano version|piano cover|piano arrangement|arr\.?)\b", re.IGNORECASE)
 _NIGHTCORE_MARKER = re.compile(r"\bnightcore\b", re.IGNORECASE)
+_LYRICS_MARKER = re.compile(r"\b(lyrics|lyric|lyric video|lyrics video)\b", re.IGNORECASE)
+_JUMPSTYLE_MARKER = re.compile(r"\bjumpstyle\b", re.IGNORECASE)
+_DANCE_MARKER = re.compile(r"\b(jumpstyle|dance|edm)\b", re.IGNORECASE)
+_REMIX_COVER_MARKER = re.compile(r"\b(remix|cover|version|arrangement|arr\.?)\b", re.IGNORECASE)
 _CLASSICAL_MARKER = re.compile(r"\b(beethoven|sonata|symphony|concerto|classical|moonlight sonata)\b", re.IGNORECASE)
 _GAME_MARKER = re.compile(r"\b(game|video game|game soundtrack)\b", re.IGNORECASE)
 _MOVIE_MARKER = re.compile(r"\b(movie|film)\b", re.IGNORECASE)
@@ -276,7 +280,7 @@ def _track_input_haystack(track: dict[str, Any] | None) -> str:
         return ""
     return " ".join(
         str(track.get(key) or "")
-        for key in ("title", "artist", "album", "source_title", "sourceTitle", "description")
+        for key in ("title", "artist", "album", "source_title", "sourceTitle", "description", "genre", "existing_genre")
     )
 
 
@@ -330,6 +334,92 @@ def _tag_is_title_leakage(tag: str, track: dict[str, Any] | None) -> bool:
     if len(tag_tokens) == 1 and tag_tokens.pop() in title_tokens and tag_norm not in _USEFUL_TAG_WORDS:
         return True
     return False
+
+
+def _tag_is_grounded(
+    tag: str,
+    *,
+    track_haystack: str,
+    genre: str,
+    primary_genre: str,
+    style: str | None,
+) -> bool:
+    tag_norm = _normalize_key(tag)
+    haystack_norm = _normalize_key(track_haystack)
+    genre_norm = _normalize_key(genre)
+    primary_norm = _normalize_key(primary_genre)
+    style_norm = _normalize_key(style) if style else ""
+
+    if not tag_norm:
+        return False
+
+    if tag_norm in {genre_norm, primary_norm} and is_broad_genre(tag) and tag != UNKNOWN_GENRE:
+        return True
+    if style_norm and tag_norm == style_norm:
+        return True
+
+    if tag_norm == "piano":
+        return bool(_PIANO_MARKER.search(haystack_norm)) or style_norm == "piano"
+    if tag_norm == "lyrics":
+        return bool(_LYRICS_MARKER.search(haystack_norm))
+    if tag_norm == "jumpstyle":
+        return bool(_JUMPSTYLE_MARKER.search(haystack_norm)) or style_norm == "jumpstyle"
+    if tag_norm == "nightcore":
+        return bool(_NIGHTCORE_MARKER.search(haystack_norm)) or style_norm == "nightcore"
+    if tag_norm == "rock":
+        return (
+            bool(re.search(r"\brock\b", haystack_norm))
+            or genre_norm == "rock"
+            or primary_norm == "rock"
+            or bool(_ROCK_VERSION_MARKER.search(haystack_norm))
+        )
+    if tag_norm == "electronic":
+        return genre_norm == "electronic" or primary_norm == "electronic" or "electronic" in haystack_norm
+    if tag_norm == "dance":
+        return genre_norm == "dance" or primary_norm == "dance" or bool(_DANCE_MARKER.search(haystack_norm))
+    if tag_norm in {"ost", "soundtrack"}:
+        return (
+            bool(_SOUNDTRACK_MARKERS.search(haystack_norm))
+            or genre_norm == "soundtrack"
+            or primary_norm == "soundtrack"
+        )
+    if tag_norm == "game":
+        return bool(_GAME_MARKER.search(haystack_norm))
+    if tag_norm in {"movie", "film"}:
+        return bool(_MOVIE_MARKER.search(haystack_norm))
+    if tag_norm == "anime":
+        return bool(_ANIME_MARKER.search(haystack_norm))
+    if tag_norm == "cover":
+        return bool(re.search(r"\bcover\b", haystack_norm)) or style_norm == "cover"
+    if tag_norm == "remix":
+        return bool(re.search(r"\bremix\b", haystack_norm)) or style_norm == "remix"
+    if tag_norm == "instrumental":
+        return "instrumental" in haystack_norm or style_norm == "instrumental"
+    if tag_norm == "classical":
+        return bool(_CLASSICAL_MARKER.search(haystack_norm)) or genre_norm == "classical"
+    if tag_norm in {"opening", "ending", "op", "ed"}:
+        return bool(_SOUNDTRACK_MARKERS.search(haystack_norm))
+    if tag_norm in _USEFUL_TAG_WORDS:
+        return tag_norm in haystack_norm
+    return tag_norm in haystack_norm
+
+
+def _style_is_grounded(style: str | None, track_haystack: str) -> bool:
+    if not style:
+        return True
+    norm = _normalize_key(style)
+    haystack = _normalize_key(track_haystack)
+    if norm == "piano":
+        return bool(_PIANO_MARKER.search(haystack))
+    if norm == "nightcore":
+        return bool(_NIGHTCORE_MARKER.search(haystack))
+    if norm in {"remix", "cover"}:
+        return bool(_REMIX_COVER_MARKER.search(haystack))
+    if norm == "jumpstyle":
+        return bool(_JUMPSTYLE_MARKER.search(haystack))
+    if is_style_label(style):
+        return norm in haystack
+    return True
 
 
 def _tag_supported_by_input(tag: str, input_haystack: str) -> bool:
@@ -451,12 +541,15 @@ def _clean_tags(
     *,
     track: dict[str, Any] | None,
     style: str | None,
-    input_haystack: str,
-) -> tuple[list[str], str | None, int]:
+    track_haystack: str,
+    genre: str,
+    primary_genre: str,
+) -> tuple[list[str], str | None, int, int]:
     seen: set[str] = set()
     cleaned: list[str] = []
     current_style = style
     removed = 0
+    unsupported_removed = 0
     for tag in tags:
         text, current_style = _normalize_tag_candidate(tag, style=current_style)
         if not text:
@@ -465,18 +558,22 @@ def _clean_tags(
         if _tag_is_artist_leakage(text, track) or _tag_is_title_leakage(text, track):
             removed += 1
             continue
-        if not _tag_supported_by_input(text, input_haystack):
+        if not _tag_supported_by_input(text, track_haystack):
+            unsupported_removed += 1
             removed += 1
             continue
-        if _normalize_key(text) == "classical" and not _CLASSICAL_MARKER.search(input_haystack):
+        if _normalize_key(text) == "classical" and not _CLASSICAL_MARKER.search(track_haystack):
+            unsupported_removed += 1
             removed += 1
             continue
-        style_tags_requiring_input = {"jumpstyle", "hardstyle", "dubstep", "synthwave"}
-        if (
-            input_haystack
-            and _normalize_key(text) in style_tags_requiring_input
-            and _normalize_key(text) not in _normalize_key(input_haystack)
+        if not _tag_is_grounded(
+            text,
+            track_haystack=track_haystack,
+            genre=genre,
+            primary_genre=primary_genre,
+            style=current_style,
         ):
+            unsupported_removed += 1
             removed += 1
             continue
         key = text.lower()
@@ -484,7 +581,7 @@ def _clean_tags(
             continue
         seen.add(key)
         cleaned.append(text)
-    return cleaned, current_style, removed
+    return cleaned, current_style, removed, unsupported_removed
 
 
 def _relocate_label(label: str, *, tags: list[str], style: str | None, collection: str | None) -> tuple[str | None, str | None]:
@@ -560,6 +657,7 @@ def _recalculate_confidence(
     track: dict[str, Any] | None,
     genre_fixed: bool,
     tags_removed: int,
+    unsupported_tags_removed: int,
     reason_sanitized: bool,
 ) -> float:
     score = 0.0
@@ -573,12 +671,18 @@ def _recalculate_confidence(
         score += 0.10
     if genre_fixed:
         score -= 0.15
+    if unsupported_tags_removed > 0:
+        score -= 0.15
     if tags_removed >= 2:
         score -= 0.10
     if reason_sanitized:
         score -= 0.10
     score = max(0.0, min(round(score, 2), 0.95))
     if genre == UNKNOWN_GENRE:
+        score = min(score, 0.45)
+    if genre == UNKNOWN_GENRE and style:
+        score = min(score, 0.55)
+    if len(tags) <= 1 and genre == UNKNOWN_GENRE:
         score = min(score, 0.55)
     return score
 
@@ -647,6 +751,7 @@ def validate_model_classification(parsed: dict[str, Any], *, track: dict[str, An
     input_haystack = _input_haystack(track, parsed=parsed)
     genre_fixed = False
     original_tag_count = len(tags)
+    unsupported_removed = 0
 
     for candidate in (genre, primary_genre):
         if is_garbage_genre(candidate):
@@ -708,7 +813,14 @@ def validate_model_classification(parsed: dict[str, Any], *, track: dict[str, An
         genre = "Soundtrack"
         genre_fixed = True
 
-    tags, updated_style, tags_removed = _clean_tags(tags, track=track, style=style, input_haystack=track_haystack)
+    tags, updated_style, tags_removed, unsupported_removed = _clean_tags(
+        tags,
+        track=track,
+        style=style,
+        track_haystack=track_haystack,
+        genre=genre,
+        primary_genre=primary_genre,
+    )
     if updated_style and not style:
         style = updated_style
     tags_removed += max(0, original_tag_count - len(tags))
@@ -724,6 +836,33 @@ def validate_model_classification(parsed: dict[str, Any], *, track: dict[str, An
         input_haystack=input_haystack,
     )
 
+    if style and not _style_is_grounded(style, track_haystack):
+        style = None
+        genre_fixed = True
+
+    tags, _, final_removed, final_unsupported = _clean_tags(
+        tags,
+        track=track,
+        style=style,
+        track_haystack=track_haystack,
+        genre=genre,
+        primary_genre=primary_genre,
+    )
+    tags_removed += final_removed
+    unsupported_removed += final_unsupported
+
+    if style and _style_is_grounded(style, track_haystack):
+        style_tag = _title_case_tag(style)
+        if style_tag and style_tag.lower() not in {tag.lower() for tag in tags}:
+            if _tag_is_grounded(
+                style_tag,
+                track_haystack=track_haystack,
+                genre=genre,
+                primary_genre=primary_genre,
+                style=style,
+            ):
+                tags.append(style_tag)
+
     reason, reason_sanitized = _sanitize_reason(str(parsed.get("reason") or ""), track)
     if reason_hint:
         reason = reason_hint
@@ -737,6 +876,7 @@ def validate_model_classification(parsed: dict[str, Any], *, track: dict[str, An
         track=track,
         genre_fixed=genre_fixed,
         tags_removed=tags_removed,
+        unsupported_tags_removed=unsupported_removed,
         reason_sanitized=reason_sanitized,
     )
 

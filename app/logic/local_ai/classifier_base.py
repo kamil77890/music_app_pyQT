@@ -3,7 +3,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Any
 
-CLASSIFIER_VERSION = "local-ai-v4-clean-tags-confidence"
+CLASSIFIER_VERSION = "local-ai-v5-deterministic-grounded"
 
 
 def default_classification_result(*, metadata_source: str = "fallback", reason: str = "") -> dict[str, Any]:

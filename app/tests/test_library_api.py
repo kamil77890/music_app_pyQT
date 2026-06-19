@@ -223,6 +223,57 @@ class TestLibrarySongsEndpoint:
         assert song["metadata_source"] == "fallback"
         assert "reason" in song
 
+    def test_library_songs_returns_same_enrichment_on_repeated_calls(self, monkeypatch, tmp_path):
+        import app.endpoints.library_api as lib_api
+        from app.logic.local_ai import enrichment_service
+
+        cache_path = tmp_path / "cache.json"
+        monkeypatch.setenv("LOCAL_AI_CACHE_PATH", str(cache_path))
+        monkeypatch.setenv(LIBRARY_PATH_VAR, str(tmp_path / "music"))
+        (tmp_path / "music").mkdir(parents=True)
+
+        song = {
+            "title": "Nightcore - Die Young",
+            "artist": "Artist",
+            "album": "Album",
+            "genre": "",
+            "path": str(tmp_path / "music" / "song.mp3"),
+            "fileMtime": 1,
+            "fileSize": 2,
+        }
+        monkeypatch.setattr(lib_api, "scan_music_files", lambda lib_path: [song])
+
+        calls = {"count": 0}
+
+        class StableClassifier:
+            def classify(self, track):
+                calls["count"] += 1
+                return {
+                    "title": track.get("title", ""),
+                    "artist": track.get("artist", ""),
+                    "album": track.get("album", ""),
+                    "genre": "Electronic",
+                    "primary_genre": "Electronic",
+                    "style": "Nightcore",
+                    "subgenre": None,
+                    "collection": None,
+                    "mood": [],
+                    "tags": ["Nightcore"],
+                    "metadata_quality": "medium",
+                    "metadata_source": "local_ai",
+                    "classification_confidence": 0.5,
+                    "reason": "stable",
+                    "videoId": "",
+                }
+
+        monkeypatch.setattr(enrichment_service, "get_classifier", lambda **kwargs: StableClassifier())
+
+        first = client.get("/api/library/songs").json()
+        second = client.get("/api/library/songs").json()
+
+        assert first["songs"] == second["songs"]
+        assert calls["count"] == 1
+
 
 class TestLibraryStreamEndpoint:
     def test_stream_outside_library_blocked(self):

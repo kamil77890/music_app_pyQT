@@ -137,9 +137,10 @@ def test_ollama_classifier_uses_model_response(monkeypatch):
     assert result["style"] == "Piano"
     assert result["subgenre"] == "Solo Piano"
     assert result["mood"] == ["calm"]
-    assert result["tags"] == ["Instrumental"]
+    assert "Instrumental" not in result["tags"]
+    assert "Piano" in result["tags"]
     assert result["metadata_source"] == "local_ai"
-    assert 0.5 <= result["classification_confidence"] <= 0.95
+    assert 0.3 <= result["classification_confidence"] <= 0.75
 
 
 def test_ollama_classifier_falls_back_without_hardcoded_mapping(monkeypatch):
@@ -234,7 +235,7 @@ def test_enrichment_batch_uses_cache_without_reclassifying(monkeypatch, tmp_path
         "reason": "cached",
         "_cache_meta": {
             "classifier_version": CLASSIFIER_VERSION,
-            "provider": "ollama",
+            "provider": "fallback",
             "model": "",
             "metadata_enabled": False,
             "track_hash": f"{track}|1|2|Song|Artist|",
@@ -474,3 +475,111 @@ def test_write_audio_metadata_repairs_video_id_from_tcon(tmp_path):
     repaired = ID3(str(audio_path))
     assert str(repaired["TCON"].text[0]) == "Rock"
     assert str(repaired["TXXX:YOUTUBE_VIDEO_ID"].text[0]) == "pzXMXGM21YI"
+
+
+def test_enrich_track_metadata_same_result_twice_uses_cache(monkeypatch, tmp_path):
+    from app.logic.local_ai import enrichment_service
+    from app.logic.local_ai.enrichment_service import enrich_track_metadata
+
+    cache_path = tmp_path / "cache.json"
+    monkeypatch.setenv("LOCAL_AI_CACHE_PATH", str(cache_path))
+    monkeypatch.setenv("LOCAL_AI_METADATA_ENABLED", "false")
+
+    calls = {"count": 0}
+
+    class StableClassifier:
+        def classify(self, track):
+            calls["count"] += 1
+            return {
+                "title": track.get("title", ""),
+                "artist": track.get("artist", ""),
+                "album": track.get("album", ""),
+                "genre": "Rock",
+                "primary_genre": "Rock",
+                "style": None,
+                "subgenre": None,
+                "collection": None,
+                "mood": [],
+                "tags": ["Rock"],
+                "metadata_quality": "medium",
+                "metadata_source": "fallback",
+                "classification_confidence": 0.5,
+                "reason": "stable",
+                "videoId": "",
+            }
+
+    monkeypatch.setattr(enrichment_service, "get_classifier", lambda **kwargs: StableClassifier())
+
+    track = {"title": "Song", "artist": "Artist", "album": "Album", "path": "/tmp/song.mp3", "fileMtime": 1, "fileSize": 2}
+    first = enrich_track_metadata(track)
+    second = enrich_track_metadata(track)
+
+    assert first["tags"] == second["tags"]
+    assert first["genre"] == second["genre"]
+    assert calls["count"] == 1
+
+
+def test_ollama_classifier_same_track_twice_returns_same_result(monkeypatch):
+    from app.logic.local_ai.ollama_classifier import OllamaClassifier
+
+    fixed_response = json.dumps(
+        {
+            "genre": "Electronic",
+            "primary_genre": "Electronic",
+            "style": "Nightcore",
+            "subgenre": None,
+            "collection": None,
+            "tags": ["Piano", "Jumpstyle", "Nightcore"],
+            "mood": [],
+            "metadata_quality": "low",
+            "classification_confidence": 0.9,
+            "reason": "Nightcore remix.",
+        }
+    )
+    monkeypatch.setattr(OllamaClassifier, "_call_ollama", lambda self, prompt: fixed_response)
+
+    classifier = OllamaClassifier(base_url="http://localhost:11434", model="test-model")
+    track = {"title": "Nightcore - Die Young", "artist": "Artist", "genre": ""}
+    first = classifier.classify(track)
+    second = classifier.classify(track)
+
+    assert first["tags"] == second["tags"]
+    assert first["genre"] == second["genre"]
+    assert first["style"] == second["style"]
+    assert "Piano" not in first["tags"]
+    assert "Jumpstyle" not in first["tags"]
+
+
+def test_ollama_classifier_uses_deterministic_options(monkeypatch):
+    from app.logic.local_ai.ollama_classifier import OllamaClassifier
+
+    captured: list[dict] = []
+
+    def _fake_post(self, payload_data):
+        captured.append(payload_data)
+        return json.dumps(
+            {
+                "genre": "Rock",
+                "primary_genre": "Rock",
+                "style": None,
+                "subgenre": None,
+                "collection": None,
+                "tags": ["Rock"],
+                "mood": [],
+                "metadata_quality": "medium",
+                "classification_confidence": 0.8,
+                "reason": "Rock track.",
+            }
+        )
+
+    monkeypatch.setattr(OllamaClassifier, "_post_chat", _fake_post)
+
+    OllamaClassifier(base_url="http://localhost:11434", model="test-model").classify(
+        {"title": "Rock Song", "artist": "Artist", "genre": ""}
+    )
+
+    assert captured
+    options = captured[0].get("options") or {}
+    assert options.get("temperature") == 0
+    assert options.get("top_p") == 0.1
+    assert options.get("seed") == 42

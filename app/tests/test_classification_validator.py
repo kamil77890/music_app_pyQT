@@ -145,7 +145,8 @@ def test_validator_filters_weak_tags_and_normalizes_versions():
             "metadata_quality": "medium",
             "classification_confidence": 0.9,
             "reason": "Rock version with lyrics.",
-        }
+        },
+        track={"title": "Rock Version with Lyrics", "artist": "Artist"},
     )
 
     assert "Rock" in result["tags"]
@@ -264,7 +265,8 @@ def test_validator_removes_useless_adjective_tags():
             "metadata_quality": "low",
             "classification_confidence": 0.9,
             "reason": "Nightcore jumpstyle.",
-        }
+        },
+        track={"title": "Nightcore - HEAVENLY JUMPSTYLE", "artist": "Artist"},
     )
 
     assert "Harder" not in result["tags"]
@@ -295,6 +297,8 @@ def test_validator_rock_version_sets_rock_genre():
     assert result["genre"] == "Rock"
     assert result["primary_genre"] == "Rock"
     assert "Rock" in result["tags"]
+    assert "Nightcore" in result["tags"]
+    assert "Lyrics" in result["tags"]
     assert "Rock Version" not in result["tags"]
 
 
@@ -385,7 +389,7 @@ def test_validator_unknown_genre_confidence_not_high():
         }
     )
 
-    assert result["classification_confidence"] <= 0.55
+    assert result["classification_confidence"] <= 0.45
 
 
 def test_validator_reason_max_length():
@@ -431,3 +435,133 @@ def test_validator_maps_electro_pop_to_electronic():
 
     assert result["primary_genre"] == "Electronic"
     assert result["genre"] == "Electronic"
+
+
+def test_validator_die_young_rejects_ungrounded_piano_and_jumpstyle():
+    from app.logic.local_ai.classification_validator import validate_model_classification
+
+    track = {"title": "Nightcore - Die Young", "artist": "Artist"}
+    payload = {
+        "genre": "Electronic",
+        "primary_genre": "Electronic",
+        "style": "Nightcore",
+        "subgenre": None,
+        "collection": None,
+        "tags": ["Piano", "Jumpstyle", "Nightcore"],
+        "mood": [],
+        "metadata_quality": "low",
+        "classification_confidence": 0.9,
+        "reason": "Nightcore remix.",
+    }
+    result = validate_model_classification(payload, track=track)
+
+    assert "Piano" not in result["tags"]
+    assert "Jumpstyle" not in result["tags"]
+    assert "Nightcore" in result["tags"]
+
+
+def test_validator_die_young_keeps_jumpstyle_only_with_input():
+    from app.logic.local_ai.classification_validator import validate_model_classification
+
+    without = validate_model_classification(
+        {
+            "genre": "Dance",
+            "primary_genre": "Dance",
+            "style": "Nightcore",
+            "subgenre": None,
+            "collection": None,
+            "tags": ["Jumpstyle", "Nightcore"],
+            "mood": [],
+            "metadata_quality": "low",
+            "classification_confidence": 0.9,
+            "reason": "Nightcore remix.",
+        },
+        track={"title": "Nightcore - Die Young", "artist": "Artist"},
+    )
+    with_jumpstyle = validate_model_classification(
+        {
+            "genre": "Dance",
+            "primary_genre": "Dance",
+            "style": "Nightcore",
+            "subgenre": None,
+            "collection": None,
+            "tags": ["Jumpstyle", "Nightcore"],
+            "mood": [],
+            "metadata_quality": "low",
+            "classification_confidence": 0.9,
+            "reason": "Nightcore jumpstyle remix.",
+        },
+        track={"title": "Nightcore - Die Young (Jumpstyle)", "artist": "Artist"},
+    )
+
+    assert "Jumpstyle" not in without["tags"]
+    assert "Jumpstyle" in with_jumpstyle["tags"]
+
+
+def test_validator_ost_piano_rejects_ungrounded_lyrics():
+    from app.logic.local_ai.classification_validator import validate_model_classification
+
+    payload = {
+        "genre": "Soundtrack",
+        "primary_genre": "Soundtrack",
+        "style": "Piano",
+        "subgenre": None,
+        "collection": None,
+        "tags": ["Lyrics", "Piano", "OST"],
+        "mood": [],
+        "metadata_quality": "medium",
+        "classification_confidence": 0.9,
+        "reason": "OST piano cover.",
+    }
+    solo = validate_model_classification(payload, track={"title": "Solo Leveling OST Piano", "artist": "Artist"})
+    tokyo = validate_model_classification(payload, track={"title": "Tokyo Ghoul OP Piano", "artist": "Artist"})
+
+    assert "Lyrics" not in solo["tags"]
+    assert "Lyrics" not in tokyo["tags"]
+    assert "Piano" in solo["tags"]
+    assert "Piano" in tokyo["tags"]
+
+
+def test_validator_piano_version_keeps_piano_style_and_tag():
+    from app.logic.local_ai.classification_validator import validate_model_classification
+
+    result = validate_model_classification(
+        {
+            "genre": "Unknown Genre",
+            "primary_genre": "Unknown Genre",
+            "style": "Piano",
+            "subgenre": None,
+            "collection": None,
+            "tags": ["Piano"],
+            "mood": [],
+            "metadata_quality": "medium",
+            "classification_confidence": 0.9,
+            "reason": "Piano version.",
+        },
+        track={"title": "Song Piano Version", "artist": "Artist"},
+    )
+
+    assert result["style"] == "Piano"
+    assert "Piano" in result["tags"]
+
+
+def test_validator_same_payload_twice_returns_same_result():
+    from app.logic.local_ai.classification_validator import validate_model_classification
+
+    track = {"title": "Nightcore - Poker Face (Rock Version) (Lyrics)", "artist": "Artist"}
+    payload = {
+        "genre": "Rock",
+        "primary_genre": "Rock",
+        "style": "Nightcore",
+        "subgenre": None,
+        "collection": None,
+        "tags": ["Rock", "Nightcore", "Lyrics", "Piano"],
+        "mood": [],
+        "metadata_quality": "medium",
+        "classification_confidence": 0.9,
+        "reason": "Rock version nightcore with lyrics.",
+    }
+    first = validate_model_classification(payload, track=track)
+    second = validate_model_classification(payload, track=track)
+
+    assert first == second
