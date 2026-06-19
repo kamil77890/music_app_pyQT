@@ -2,6 +2,34 @@ from pathlib import Path
 import json
 
 
+def _complete_cache_fields(**overrides):
+    base = {
+        "style": None,
+        "subgenre": None,
+        "collection": None,
+        "mood": [],
+        "tags": [],
+        "album": "Unknown Album",
+        "album_source": "pending_grouping",
+        "album_confidence": 0.0,
+        "album_kind": None,
+        "group_id": None,
+        "semantic_profile": {
+            "main_genre": "Unknown Genre",
+            "style_markers": [],
+            "context_markers": [],
+            "performance_type": "studio",
+            "likely_group_theme": "library tracks",
+        },
+        "metadata_quality": "medium",
+        "metadata_source": "fallback",
+        "classification_confidence": 0.0,
+        "reason": "",
+    }
+    base.update(overrides)
+    return base
+
+
 FORBIDDEN_HARDCODED_STRINGS = [
     "Tokyo Ghoul",
     "Solo Leveling",
@@ -226,20 +254,16 @@ def test_enrichment_batch_uses_cache_without_reclassifying(monkeypatch, tmp_path
     song = {"path": str(track), "title": "Song", "artist": "Artist", "genre": "", "fileMtime": 1, "fileSize": 2}
     cache_entry = {
         **song,
-        "genre": "Rock",
-        "primary_genre": "Rock",
-        "style": None,
-        "subgenre": None,
-        "collection": None,
-        "mood": [],
-        "tags": ["energetic"],
-        "album": "Singles",
-        "album_source": "fallback",
-        "album_confidence": 0.35,
-        "metadata_quality": "high",
-        "metadata_source": "local_ai",
-        "classification_confidence": 0.8,
-        "reason": "cached",
+        **_complete_cache_fields(
+            genre="Rock",
+            primary_genre="Rock",
+            tags=["energetic"],
+            album="Electronic Nightcore",
+            metadata_quality="high",
+            metadata_source="local_ai",
+            classification_confidence=0.8,
+            reason="cached",
+        ),
         "_cache_meta": {
             "classifier_version": CLASSIFIER_VERSION,
             "provider": "fallback",
@@ -429,6 +453,11 @@ def test_production_classifier_has_no_hardcoded_music_mappings():
         classifier_dir / "ollama_classifier.py",
         classifier_dir / "ollama_availability.py",
         classifier_dir / "classifier_base.py",
+        classifier_dir / "album_group_planner.py",
+        classifier_dir / "album_group_validator.py",
+        classifier_dir / "album_group_registry.py",
+        classifier_dir / "semantic_profile.py",
+        classifier_dir / "album_validator.py",
     ]
 
     for file_path in production_files:
@@ -498,22 +527,17 @@ def test_enrich_track_metadata_same_result_twice_uses_cache(monkeypatch, tmp_pat
         def classify(self, track):
             calls["count"] += 1
             return {
-                "title": track.get("title", ""),
-                "artist": track.get("artist", ""),
-                "album": track.get("album", ""),
-                "album_source": "fallback",
-                "album_confidence": 0.5,
-                "genre": "Rock",
-                "primary_genre": "Rock",
-                "style": None,
-                "subgenre": None,
-                "collection": None,
-                "mood": [],
-                "tags": ["Rock"],
-                "metadata_quality": "medium",
-                "metadata_source": "fallback",
-                "classification_confidence": 0.5,
-                "reason": "stable",
+                **_complete_cache_fields(
+                    title=track.get("title", ""),
+                    artist=track.get("artist", ""),
+                    album=track.get("album", ""),
+                    genre="Rock",
+                    primary_genre="Rock",
+                    tags=["Rock"],
+                    metadata_quality="medium",
+                    classification_confidence=0.5,
+                    reason="stable",
+                ),
                 "videoId": "",
             }
 

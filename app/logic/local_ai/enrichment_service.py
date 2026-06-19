@@ -10,6 +10,15 @@ from typing import Any
 from app.config.jellyfin_config import JellyfinConfig
 from app.logic.jellyfin_library import _resolve_duplicate, _safe_path, _set_permissions, sanitize_component
 from app.logic.library_scanner import SUPPORTED_EXTENSIONS, scan_music_files
+from app.logic.local_ai.album_group_planner import (
+    apply_album_group_assignments,
+    build_move_plans_for_assignments,
+    format_album_group_plan,
+    plan_library_album_groups,
+    track_key as album_group_track_key,
+)
+from app.logic.local_ai.album_group_registry import load_registry, registry_group_for_track
+from app.logic.local_ai.album_group_validator import is_official_or_existing_album
 from app.logic.local_ai.album_validator import is_missing_album, is_repairable_source_album_folder
 from app.logic.local_ai.classifier_base import CLASSIFIER_VERSION, LocalMetadataClassifier
 from app.logic.local_ai.classification_validator import is_broad_genre, is_style_label
@@ -23,6 +32,8 @@ _cache_lock = threading.Lock()
 _cache_state: dict[str, Any] = {"path": "", "data": {}}
 _MANAGED_TAGS_ID3_DESC = "LOCAL_AI_TAGS"
 _MANAGED_COLLECTION_ID3_DESC = "LOCAL_AI_COLLECTION"
+_MANAGED_ALBUM_KIND_ID3_DESC = "LOCAL_AI_ALBUM_KIND"
+_MANAGED_GROUP_ID_ID3_DESC = "LOCAL_AI_GROUP_ID"
 _AUDIO_EXTENSIONS = {ext.lower() for ext in SUPPORTED_EXTENSIONS}
 _IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
 
@@ -44,7 +55,14 @@ def _parse_managed_tags(raw: Any) -> list[str]:
 
 def read_audio_file_metadata(path: str) -> dict[str, Any]:
     ext = os.path.splitext(path)[1].lower()
-    out: dict[str, Any] = {"genre": "", "album": "", "managed_tags": [], "managed_collection": ""}
+    out: dict[str, Any] = {
+        "genre": "",
+        "album": "",
+        "managed_tags": [],
+        "managed_collection": "",
+        "managed_album_kind": "",
+        "managed_group_id": "",
+    }
     if ext == ".mp3":
         from mutagen.id3 import ID3, ID3NoHeaderError
 
@@ -63,6 +81,10 @@ def read_audio_file_metadata(path: str) -> dict[str, Any]:
                     out["managed_tags"] = _parse_managed_tags(id3[key].text[0])
                 elif desc == _MANAGED_COLLECTION_ID3_DESC:
                     out["managed_collection"] = str(id3[key].text[0]).strip()
+                elif desc == _MANAGED_ALBUM_KIND_ID3_DESC:
+                    out["managed_album_kind"] = str(id3[key].text[0]).strip()
+                elif desc == _MANAGED_GROUP_ID_ID3_DESC:
+                    out["managed_group_id"] = str(id3[key].text[0]).strip()
     elif ext in (".m4a", ".mp4"):
         from mutagen.mp4 import MP4
 
@@ -80,6 +102,14 @@ def read_audio_file_metadata(path: str) -> dict[str, Any]:
         if raw_collection:
             raw = raw_collection[0]
             out["managed_collection"] = raw.decode("utf-8") if isinstance(raw, bytes) else str(raw).strip()
+        raw_kind = audio.get(f"----:com.apple.iTunes:{_MANAGED_ALBUM_KIND_ID3_DESC}")
+        if raw_kind:
+            raw = raw_kind[0]
+            out["managed_album_kind"] = raw.decode("utf-8") if isinstance(raw, bytes) else str(raw).strip()
+        raw_group = audio.get(f"----:com.apple.iTunes:{_MANAGED_GROUP_ID_ID3_DESC}")
+        if raw_group:
+            raw = raw_group[0]
+            out["managed_group_id"] = raw.decode("utf-8") if isinstance(raw, bytes) else str(raw).strip()
     return out
 
 
@@ -211,6 +241,9 @@ def _cache_entry_complete(entry: Any, *, config: LocalAIConfig) -> bool:
         "album",
         "album_source",
         "album_confidence",
+        "album_kind",
+        "group_id",
+        "semantic_profile",
         "metadata_quality",
         "metadata_source",
         "classification_confidence",
@@ -259,6 +292,36 @@ def _attach_cache_meta(result: dict[str, Any], *, track: dict[str, Any], config:
     return enriched
 
 
+def _apply_registry_album_assignment(
+    enriched: dict[str, Any],
+    *,
+    track: dict[str, Any],
+    config: LocalAIConfig,
+) -> dict[str, Any]:
+    if is_official_or_existing_album(enriched.get("album"), track=track):
+        enriched["album_kind"] = "official_or_existing"
+        enriched["album_source"] = "existing"
+        enriched["album_confidence"] = 1.0
+        return enriched
+
+    registry = load_registry(config.album_groups_registry_path)
+    existing_group = registry_group_for_track(registry, album_group_track_key(track))
+    if not existing_group:
+        return enriched
+
+    return apply_album_group_assignments(
+        enriched,
+        {
+            "album": str(existing_group.get("group_name") or ""),
+            "album_kind": "inferred_library_group",
+            "album_source": "registry",
+            "album_confidence": 0.9,
+            "group_id": existing_group.get("group_id"),
+            "collection": enriched.get("collection"),
+        },
+    )
+
+
 def enrich_track_metadata(
     track: dict[str, Any],
     *,
@@ -291,6 +354,7 @@ def enrich_track_metadata(
     enriched.update(result)
     enriched.pop("file_tags", None)
     enriched.pop("_repair_managed_albums", None)
+    enriched = _apply_registry_album_assignment(enriched, track=hydrated, config=config)
 
     if use_cache:
         with _cache_lock:
@@ -312,6 +376,9 @@ def write_audio_metadata(path: str, metadata: dict[str, Any], *, write_album: bo
     managed_tags_payload = json.dumps(managed_tags, ensure_ascii=False)
     album = normalize_album(metadata.get("album")) if write_album else UNKNOWN_ALBUM
     collection = str(metadata.get("collection") or "").strip()
+    album_kind = str(metadata.get("album_kind") or "").strip()
+    group_id = str(metadata.get("group_id") or "").strip()
+    artist = str(metadata.get("artist") or "").strip()
     if ext == ".mp3":
         from mutagen.id3 import ID3, ID3NoHeaderError, TALB, TCON, TXXX
 
@@ -329,9 +396,20 @@ def write_audio_metadata(path: str, metadata: dict[str, Any], *, write_album: bo
         if write_album and not is_missing_album(album):
             id3.delall("TALB")
             id3.add(TALB(encoding=3, text=album))
+            if artist:
+                from mutagen.id3 import TPE2
+
+                id3.delall("TPE2")
+                id3.add(TPE2(encoding=3, text=artist))
             id3.delall(f"TXXX:{_MANAGED_COLLECTION_ID3_DESC}")
             if collection:
                 id3.add(TXXX(encoding=3, desc=_MANAGED_COLLECTION_ID3_DESC, text=collection))
+            id3.delall(f"TXXX:{_MANAGED_ALBUM_KIND_ID3_DESC}")
+            if album_kind:
+                id3.add(TXXX(encoding=3, desc=_MANAGED_ALBUM_KIND_ID3_DESC, text=album_kind))
+            id3.delall(f"TXXX:{_MANAGED_GROUP_ID_ID3_DESC}")
+            if group_id:
+                id3.add(TXXX(encoding=3, desc=_MANAGED_GROUP_ID_ID3_DESC, text=group_id))
         if video_id:
             id3.delall("TXXX:YOUTUBE_VIDEO_ID")
             id3.add(TXXX(encoding=3, desc="YOUTUBE_VIDEO_ID", text=video_id))
@@ -352,11 +430,23 @@ def write_audio_metadata(path: str, metadata: dict[str, Any], *, write_album: bo
                 audio[managed_key] = [managed_tags_payload.encode("utf-8")]
         if write_album and not is_missing_album(album):
             audio["\xa9alb"] = [album]
+            if artist:
+                audio["aART"] = [artist]
             collection_key = f"----:com.apple.iTunes:{_MANAGED_COLLECTION_ID3_DESC}"
             if collection_key in audio:
                 del audio[collection_key]
             if collection:
                 audio[collection_key] = [collection.encode("utf-8")]
+            kind_key = f"----:com.apple.iTunes:{_MANAGED_ALBUM_KIND_ID3_DESC}"
+            if kind_key in audio:
+                del audio[kind_key]
+            if album_kind:
+                audio[kind_key] = [album_kind.encode("utf-8")]
+            group_key = f"----:com.apple.iTunes:{_MANAGED_GROUP_ID_ID3_DESC}"
+            if group_key in audio:
+                del audio[group_key]
+            if group_id:
+                audio[group_key] = [group_id.encode("utf-8")]
         if video_id:
             audio["----:com.apple.iTunes:YOUTUBE_VIDEO_ID"] = [video_id.encode("utf-8")]
         audio.save()
@@ -432,11 +522,9 @@ def move_track_to_album_folder(
 def cleanup_stale_repairable_album_folders(
     *,
     music_dir: str,
-    target_album: str = "Singles",
+    target_album_by_artist: dict[str, str] | None = None,
     dry_run: bool = False,
 ) -> list[dict[str, str]]:
-    if is_missing_album(target_album):
-        return []
 
     lib_root = Path(os.path.realpath(music_dir))
     if not lib_root.is_dir():
@@ -448,6 +536,9 @@ def cleanup_stale_repairable_album_folders(
             continue
         for album_dir in sorted(artist_dir.iterdir()):
             if not album_dir.is_dir() or not is_repairable_source_album_folder(album_dir.name):
+                continue
+            target_album = (target_album_by_artist or {}).get(artist_dir.name, "")
+            if not target_album or is_missing_album(target_album):
                 continue
             if sanitize_component(album_dir.name) == sanitize_component(target_album):
                 continue
@@ -512,11 +603,15 @@ def enrich_library_batch(
     force_local_ai: bool = False,
     repair_managed_tags: bool = False,
     repair_managed_albums: bool = False,
+    plan_album_groups: bool = False,
+    rebuild_album_groups: bool = False,
 ) -> dict[str, Any]:
     config = get_config()
     cache = _load_cache(config.cache_path)
     lib_dir = music_dir or JellyfinConfig.get_music_library_path()
     songs = scan_music_files(lib_dir)
+    effective_dry_run = dry_run or plan_album_groups
+    persist_registry = not plan_album_groups and (write_albums or move_files)
     summary = {
         "analyzed": 0,
         "genres_updated": 0,
@@ -525,15 +620,18 @@ def enrich_library_batch(
         "files_moved": 0,
         "move_plans": [],
         "errors": 0,
-        "dry_run": dry_run,
+        "dry_run": effective_dry_run,
         "write_tags": write_tags,
         "write_albums": write_albums,
         "move_files": move_files,
+        "plan_album_groups": plan_album_groups,
+        "rebuild_album_groups": rebuild_album_groups,
     }
     groups: dict[str, int] = {}
     subgenres: dict[str, int] = {}
     processed = 0
     needs_repair = repair_managed_tags or repair_managed_albums
+    enriched_items: list[tuple[dict[str, Any], dict[str, Any]]] = []
 
     for song in songs:
         if limit is not None and processed >= limit:
@@ -551,6 +649,7 @@ def enrich_library_batch(
                     force_local_ai=force_local_ai,
                     repair_managed_tags=repair_managed_tags,
                     repair_managed_albums=repair_managed_albums,
+                    use_cache=not rebuild_album_groups,
                 )
             if only_missing_genre and normalize_genre(song.get("genre")) != UNKNOWN_GENRE:
                 continue
@@ -558,6 +657,7 @@ def enrich_library_batch(
                 continue
             processed += 1
             summary["analyzed"] += 1
+            enriched_items.append((song, enriched))
             if enriched.get("genre") != normalize_genre(song.get("genre")):
                 summary["genres_updated"] += 1
             if enriched.get("album") != normalize_album(song.get("album")):
@@ -565,13 +665,47 @@ def enrich_library_batch(
             if enriched.get("tags") != (song.get("tags") or []):
                 summary["tags_updated"] += 1
             if group_preview:
-                group = enriched.get("style") or enriched.get("primary_genre") or "Unknown"
+                group = enriched.get("album") or enriched.get("style") or enriched.get("primary_genre") or "Unknown"
                 groups[group] = groups.get(group, 0) + 1
                 sub = enriched.get("subgenre")
                 if sub:
                     subgenres[sub] = subgenres.get(sub, 0) + 1
             cache[cache_key] = _attach_cache_meta(enriched, track=song, config=config)
-            if song.get("path") and (write_tags or write_albums) and not dry_run:
+        except Exception:
+            summary["errors"] += 1
+
+    group_plan: dict[str, Any] | None = None
+    if enriched_items and (plan_album_groups or write_albums or move_files or repair_managed_albums):
+        all_enriched = [enriched for _, enriched in enriched_items]
+        group_plan = plan_library_album_groups(
+            all_enriched,
+            config=config,
+            rebuild=rebuild_album_groups,
+            repair_managed_albums=repair_managed_albums,
+            use_local_ai=force_local_ai,
+            persist_registry=persist_registry,
+        )
+        for song, enriched in enriched_items:
+            assignment = group_plan["assignments"].get(album_group_track_key(enriched))
+            if assignment:
+                enriched.update(apply_album_group_assignments(enriched, assignment))
+                cache[_track_cache_key(song)] = _attach_cache_meta(enriched, track=song, config=config)
+
+        move_plans = build_move_plans_for_assignments(all_enriched, group_plan["assignments"], music_dir=lib_dir)
+        summary["album_groups"] = group_plan.get("groups", [])
+        summary["album_group_plan_text"] = format_album_group_plan(group_plan, move_plans=move_plans)
+        summary["move_plans"].extend(move_plans)
+
+    target_album_by_artist: dict[str, str] = {}
+    if group_plan:
+        for group in group_plan.get("groups", []):
+            artist = str(group.get("artist_scope") or "")
+            if artist and artist not in target_album_by_artist:
+                target_album_by_artist[artist] = str(group.get("name") or "")
+
+    for song, enriched in enriched_items:
+        try:
+            if song.get("path") and (write_tags or write_albums) and not effective_dry_run:
                 write_audio_metadata(
                     song["path"],
                     enriched,
@@ -584,11 +718,12 @@ def enrich_library_batch(
                     artist=str(enriched.get("artist") or song.get("artist") or "Unknown Artist"),
                     target_album=str(enriched.get("album") or ""),
                     music_dir=lib_dir,
-                    dry_run=dry_run,
+                    dry_run=effective_dry_run,
                 )
                 if move_result:
-                    summary["move_plans"].append(move_result)
-                    if not dry_run and move_result.get("moved") == "true":
+                    if move_result not in summary["move_plans"]:
+                        summary["move_plans"].append(move_result)
+                    if not effective_dry_run and move_result.get("moved") == "true":
                         summary["files_moved"] += 1
                         enriched["path"] = move_result["to"]
                         cache[_track_cache_key(enriched)] = _attach_cache_meta(enriched, track=enriched, config=config)
@@ -599,11 +734,11 @@ def enrich_library_batch(
     if move_files or repair_managed_albums:
         cleanup_plans = cleanup_stale_repairable_album_folders(
             music_dir=lib_dir,
-            target_album="Singles",
-            dry_run=dry_run,
+            target_album_by_artist=target_album_by_artist,
+            dry_run=effective_dry_run,
         )
         summary["move_plans"].extend(cleanup_plans)
-        if not dry_run:
+        if not effective_dry_run:
             summary["files_moved"] += sum(1 for plan in cleanup_plans if plan.get("kind") == "stale_folder_cleanup")
     if group_preview:
         summary["groups"] = groups

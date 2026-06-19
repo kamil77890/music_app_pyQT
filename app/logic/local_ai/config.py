@@ -27,6 +27,7 @@ class LocalAIConfig:
     timeout_seconds: int = 60
     batch_size: int = 5
     cache_path: str = "data/local_ai_metadata_cache.json"
+    album_groups_registry_path: str = "data/local_ai_album_groups.json"
 
 
 def get_config() -> LocalAIConfig:
@@ -38,4 +39,9 @@ def get_config() -> LocalAIConfig:
         timeout_seconds=_env_int("LOCAL_AI_TIMEOUT_SECONDS", 60) or 60,
         batch_size=_env_int("LOCAL_AI_BATCH_SIZE", 5) or 5,
         cache_path=os.environ.get("LOCAL_AI_CACHE_PATH", "data/local_ai_metadata_cache.json").strip() or "data/local_ai_metadata_cache.json",
+        album_groups_registry_path=os.environ.get(
+            "LOCAL_AI_ALBUM_GROUPS_PATH",
+            "data/local_ai_album_groups.json",
+        ).strip()
+        or "data/local_ai_album_groups.json",
     )

@@ -8,8 +8,8 @@ from urllib import error, request
 from app.logic.local_ai.classification_validator import validate_model_classification
 from app.logic.local_ai.classifier_base import LocalMetadataClassifier
 from app.logic.local_ai.fallback_classifier import FallbackClassifier
-from app.logic.local_ai.album_validator import resolve_track_album_metadata
 from app.logic.local_ai.metadata_normalizer import UNKNOWN_GENRE, calculate_metadata_quality, normalize_album, normalize_genre
+from app.logic.local_ai.semantic_profile import build_semantic_profile
 
 _CLASSIFICATION_PROMPT = """You classify music metadata for a local music library.
 
@@ -30,9 +30,15 @@ Required JSON shape:
   "style": string|null,
   "subgenre": string|null,
   "collection": string|null,
-  "album": string,
   "mood": string[],
   "tags": string[],
+  "semantic_profile": {{
+    "main_genre": string,
+    "style_markers": string[],
+    "context_markers": string[],
+    "performance_type": string,
+    "likely_group_theme": string
+  }},
   "metadata_quality": "low"|"medium"|"high",
   "classification_confidence": number,
   "reason": string
@@ -48,11 +54,11 @@ Core rules:
 
 3. Do not use context/media/franchise/platform labels as genre:
    Anime, Cyberpunk, Game, Movie, TV, YouTube, TikTok, OP, ED, Opening, Ending, Lyrics, Lyric Video.
-   These may be tags or collection only when clearly supported by the input.
+   These may be tags, collection, or semantic_profile context markers when clearly supported by the input.
 
 4. Do not use performance/style labels as genre:
    Piano, Nightcore, Cover, Remix, Instrumental, Acoustic, Orchestral Version.
-   Put these in `style` and/or tags.
+   Put these in `style`, tags, and semantic_profile style_markers.
 
 5. OST/opening/ending/media soundtrack tracks should usually use:
    primary_genre: Soundtrack
@@ -85,7 +91,7 @@ Core rules:
     They already belong in artist/title fields.
 
 12. `collection` is optional.
-    Use it only for clear source/context labels from the input.
+    Use it only for clear source/context labels from the input, such as Live for live tracks.
     If unsure, use null.
 
 13. `subgenre` is optional.
@@ -103,25 +109,13 @@ Core rules:
     0.30-0.55 when only style/context is clear.
     0.00-0.25 when mostly unknown.
 
-Album rules:
-1. `album` must be a real album/release name from the input, or a neutral fallback.
-2. If no real album is known, set album to "Singles".
-3. Live tracks without a real album may use album "Live Recordings".
+Semantic profile rules:
+1. `likely_group_theme` is NOT the final album name. It is a short semantic grouping hint.
+2. Examples: "nightcore electronic covers", "anime piano arrangements", "alternative rock", "pop rock", "classical piano".
+3. Live tracks should keep the same likely_group_theme as similar non-live tracks when musically related.
 4. Do not invent official album names.
-5. Do not use song title, artist name, channel name, video id, or full YouTube title as album.
-6. Do not use category/collection names as album. Put them in `collection` instead.
-7. Allowed `collection` values when supported by input:
-   Music Videos, Nightcore Collection, Rock Versions, Piano Versions, Piano Covers,
-   Soundtrack Collection, OST Collection, Anime Soundtracks, Classical Piano,
-   Electronic Collection, Pop Collection, Rock Collection, Dance Collection, Live Recordings.
-8. Nightcore without a real album: album "Singles", collection "Nightcore Collection".
-9. Official Music Video without a real album: album "Singles", collection "Music Videos".
-10. OST / OP / ED / anime soundtrack without a real album: album "Singles", collection from OST Collection, Soundtrack Collection, or Anime Soundtracks.
-11. Piano Version / piano arrangement without a real album: album "Singles", collection "Piano Versions" or "Piano Covers".
-12. Classical piano without a real album: album "Singles", collection "Classical Piano".
-13. Prefer simple names. Do not be creative.
-14. Same input must always produce the same album and collection.
-15. Same input must always return the same JSON.
+5. Do not use Singles, Unknown Album, Misc, General, Music, Collection, or similar generic buckets.
+6. Same input must always return the same JSON.
 """
 
 
@@ -236,47 +230,39 @@ class OllamaClassifier(LocalMetadataClassifier):
         if primary_genre == UNKNOWN_GENRE and genre != UNKNOWN_GENRE:
             primary_genre = genre
 
+        semantic_profile = build_semantic_profile(
+            track,
+            genre=genre,
+            style=validated["style"],
+            tags=validated["tags"],
+            model_profile=parsed.get("semantic_profile") if isinstance(parsed.get("semantic_profile"), dict) else None,
+        )
         working = {
             "title": fallback["title"],
             "artist": fallback["artist"],
-            "album": fallback["album"],
+            "album": normalize_album(track.get("album")),
             "genre": genre,
         }
         metadata_quality = validated["metadata_quality"]
         if metadata_quality == "low":
             metadata_quality = calculate_metadata_quality(working)
 
-        model_album = parsed.get("album") or parsed.get("album_suggestion")
-        album_meta = resolve_track_album_metadata(
-            track=track,
-            model_album=model_album,
-            model_collection=validated["collection"],
-            genre=genre,
-            style=validated["style"],
-            tags=validated["tags"],
-            repair_managed_albums=bool(track.get("_repair_managed_albums")),
-        )
-        album = album_meta.album
-        album_source = album_meta.album_source
-        album_confidence = album_meta.album_confidence
-        collection = album_meta.collection or validated["collection"]
-        if album_source in {"local_ai", "fallback"}:
-            working["album"] = album
-            metadata_quality = calculate_metadata_quality(working)
-
         return {
             "title": fallback["title"],
             "artist": fallback["artist"],
-            "album": album,
-            "album_source": album_source,
-            "album_confidence": album_confidence,
+            "album": working["album"],
+            "album_kind": None,
+            "album_source": "pending_grouping",
+            "album_confidence": 0.0,
+            "group_id": None,
             "genre": genre,
             "primary_genre": primary_genre,
             "style": validated["style"],
             "subgenre": validated["subgenre"],
-            "collection": collection,
+            "collection": validated["collection"],
             "mood": validated["mood"],
             "tags": validated["tags"],
+            "semantic_profile": semantic_profile,
             "metadata_quality": metadata_quality,
             "metadata_source": "local_ai",
             "classification_confidence": validated["classification_confidence"],

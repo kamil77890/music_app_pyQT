@@ -26,9 +26,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--write-tags", action="store_true", help="Write cleaned genre and AI-managed tags back into audio files.")
     parser.add_argument("--write-albums", action="store_true", help="Write cleaned album metadata back into audio files.")
     parser.add_argument("--repair-managed-tags", action="store_true", help="Recompute enrichment and replace stale AI-managed tags in audio files.")
-    parser.add_argument("--repair-managed-albums", action="store_true", help="Recompute enrichment and replace Unknown Album, fake category albums, or stale AI-managed albums.")
-    parser.add_argument("--repair-album-folders", action="store_true", help="Alias for --repair-managed-albums; also moves files out of fake category album folders.")
-    parser.add_argument("--move-files", action="store_true", help="Move files from Unknown Album or fake category album folders into cleaned album folders.")
+    parser.add_argument("--repair-managed-albums", action="store_true", help="Recompute enrichment and replace legacy AI-managed albums.")
+    parser.add_argument("--repair-album-folders", action="store_true", help="Alias for --repair-managed-albums; repair legacy album folders.")
+    parser.add_argument("--plan-album-groups", action="store_true", help="Show AI album group plan and move plans without writing or moving files.")
+    parser.add_argument("--rebuild-album-groups", action="store_true", help="Ignore existing album group registry and rebuild the group plan.")
+    parser.add_argument("--move-files", action="store_true", help="Move files from legacy album folders into AI group folders.")
     parser.add_argument("--group-preview", action="store_true", help="Print grouped classification summary.")
     parser.add_argument("--jellyfin-check", action="store_true", help="Run read-only Jellyfin metadata diagnostics.")
     parser.add_argument("--use-local-ai", action="store_true", help="Enable local AI classification for this run.")
@@ -58,8 +60,8 @@ def main() -> int:
     if args.use_local_ai:
         os.environ["LOCAL_AI_METADATA_ENABLED"] = "true"
     will_write = args.write_tags or args.write_albums
-    will_move = args.move_files and not args.dry_run
-    dry_run = args.dry_run or not (will_write or will_move)
+    will_move = args.move_files and not args.dry_run and not args.plan_album_groups
+    dry_run = args.dry_run or args.plan_album_groups or not (will_write or will_move)
     summary = enrich_library_batch(
         music_dir=JellyfinConfig.get_music_library_path(),
         limit=args.limit,
@@ -73,8 +75,12 @@ def main() -> int:
         force_local_ai=args.use_local_ai,
         repair_managed_tags=args.repair_managed_tags,
         repair_managed_albums=args.repair_managed_albums or args.repair_album_folders,
+        plan_album_groups=args.plan_album_groups,
+        rebuild_album_groups=args.rebuild_album_groups,
     )
     print(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True))
+    if summary.get("album_group_plan_text"):
+        print(summary["album_group_plan_text"])
     if args.group_preview:
         print("Group preview:")
         for group, count in sorted(summary.get("groups", {}).items()):

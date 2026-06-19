@@ -3,7 +3,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from app.logic.local_ai.album_validator import resolve_track_album_metadata
 from app.logic.local_ai.classifier_base import LocalMetadataClassifier
 from app.logic.local_ai.metadata_normalizer import (
     UNKNOWN_GENRE,
@@ -13,6 +12,7 @@ from app.logic.local_ai.metadata_normalizer import (
     normalize_artist,
     normalize_genre,
 )
+from app.logic.local_ai.semantic_profile import build_semantic_profile
 
 
 class FallbackClassifier(LocalMetadataClassifier):
@@ -29,6 +29,12 @@ class FallbackClassifier(LocalMetadataClassifier):
         confidence = 0.2 if clean_genre != UNKNOWN_GENRE else 0.0
         reason = "Existing genre preserved after metadata cleanup." if clean_genre != UNKNOWN_GENRE else "No reliable genre metadata available."
 
+        semantic_profile = build_semantic_profile(
+            track,
+            genre=clean_genre,
+            style=None,
+            tags=[],
+        )
         working = {
             "title": title,
             "artist": artist,
@@ -36,26 +42,22 @@ class FallbackClassifier(LocalMetadataClassifier):
             "genre": clean_genre,
         }
 
-        album_meta = resolve_track_album_metadata(
-            track=track,
-            genre=clean_genre,
-            repair_managed_albums=bool(track.get("_repair_managed_albums")),
-        )
-        working["album"] = album_meta.album
-
         return {
             "title": title,
             "artist": artist,
-            "album": album_meta.album,
-            "album_source": album_meta.album_source,
-            "album_confidence": album_meta.album_confidence,
+            "album": album,
+            "album_kind": None,
+            "album_source": "pending_grouping",
+            "album_confidence": 0.0,
+            "group_id": None,
             "genre": clean_genre,
             "primary_genre": primary_genre,
             "style": None,
             "subgenre": None,
-            "collection": album_meta.collection,
+            "collection": None,
             "mood": [],
             "tags": [],
+            "semantic_profile": semantic_profile,
             "metadata_quality": calculate_metadata_quality(working),
             "metadata_source": "fallback",
             "classification_confidence": confidence,
