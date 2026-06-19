@@ -1,3 +1,13 @@
+// --- YouTube tab state ---
+let currentYouTubeTab = {
+  tabId: null,
+  url: null,
+  title: null,
+  videoId: null,
+  isYouTube: false,
+  updatedAt: null,
+};
+
 browser.runtime.onMessage.addListener(async (msg, sender) => {
   switch (msg.type) {
     case "DOWNLOAD_CURRENT_VIDEO": {
@@ -58,10 +68,27 @@ browser.runtime.onMessage.addListener(async (msg, sender) => {
             videoId = u.searchParams.get("v") || "";
           } catch {}
         }
+        currentYouTubeTab.tabId = tab.id;
+        currentYouTubeTab.url = url;
+        currentYouTubeTab.title = tab.title || "";
+        currentYouTubeTab.videoId = videoId;
+        currentYouTubeTab.isYouTube = isYouTube;
+        currentYouTubeTab.updatedAt = Date.now();
         return { ok: true, tab: { id: tab.id, url, title: tab.title || "", isYouTube, videoId } };
       } catch (err) {
         return { ok: false, error: err.message };
       }
+    }
+
+    case "YOUTUBE_URL_CHANGED": {
+      currentYouTubeTab.tabId = sender.tab ? sender.tab.id : null;
+      currentYouTubeTab.url = msg.url || null;
+      currentYouTubeTab.title = msg.title || null;
+      currentYouTubeTab.videoId = msg.videoId || null;
+      currentYouTubeTab.isYouTube = true;
+      currentYouTubeTab.updatedAt = Date.now();
+      broadcastYouTubeUpdate();
+      return { ok: true };
     }
 
     default:
@@ -86,6 +113,12 @@ async function updateTabInfo(tabId) {
       } catch {}
     }
     currentTabInfo = { id: tab.id, url, title: tab.title || "", isYouTube, videoId };
+    currentYouTubeTab.tabId = tab.id;
+    currentYouTubeTab.url = url;
+    currentYouTubeTab.title = tab.title || "";
+    currentYouTubeTab.videoId = videoId;
+    currentYouTubeTab.isYouTube = isYouTube;
+    currentYouTubeTab.updatedAt = Date.now();
     broadcastTabUpdate();
   } catch {
     // Tab might have been closed
@@ -98,6 +131,19 @@ function broadcastTabUpdate() {
     type: "CURRENT_TAB_CHANGED",
     tab: currentTabInfo
   }).catch(() => {}); // Ignore if no receiver (e.g., sidebar not open)
+}
+
+function broadcastYouTubeUpdate() {
+  browser.runtime.sendMessage({
+    type: "CURRENT_TAB_CHANGED",
+    tab: {
+      id: currentYouTubeTab.tabId,
+      url: currentYouTubeTab.url,
+      title: currentYouTubeTab.title,
+      isYouTube: currentYouTubeTab.isYouTube,
+      videoId: currentYouTubeTab.videoId,
+    }
+  }).catch(() => {});
 }
 
 browser.tabs.onActivated.addListener((activeInfo) => {
