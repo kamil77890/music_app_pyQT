@@ -7,6 +7,12 @@ from pathlib import Path
 from typing import Any
 from urllib import error, request
 
+from app.logic.local_ai.album_group_canonical import (
+    build_group_name_from_cluster,
+    canonical_cluster_key,
+    canonicalize_group_name,
+    finalize_artist_groups,
+)
 from app.logic.local_ai.album_group_registry import (
     load_registry,
     registry_group_for_track,
@@ -14,19 +20,13 @@ from app.logic.local_ai.album_group_registry import (
     stable_group_id,
     upsert_group,
 )
-from app.logic.local_ai.album_group_validator import (
-    build_deterministic_group_name,
-    is_official_or_existing_album,
-    is_repairable_source_album_folder,
-    validate_group_name,
-)
+from app.logic.local_ai.album_group_validator import is_official_or_existing_album, is_repairable_source_album_folder
 from app.logic.local_ai.classifier_base import CLASSIFIER_VERSION
 from app.logic.local_ai.config import LocalAIConfig
 from app.logic.local_ai.metadata_normalizer import normalize_artist
-from app.logic.local_ai.semantic_profile import grouping_fingerprint, semantic_fingerprint
 from app.logic.jellyfin_library import sanitize_component
 
-_GROUPING_PROMPT = """You plan library album groups for one artist in a local music library.
+_GROUPING_PROMPT = """You assign tracks to library groups for one artist.
 
 Artist: {artist}
 
@@ -37,24 +37,18 @@ Return strict JSON only:
 {{
   "groups": [
     {{
-      "group_id": "short-stable-id",
-      "name": "Natural human-readable group name",
-      "artist_scope": "{artist}",
-      "reason": "short evidence-based reason",
       "track_paths": ["absolute/path.mp3"]
     }}
   ]
 }}
 
 Rules:
-1. Create as many groups as needed. No fixed bucket list.
-2. Group names must be short (2-5 words), human-readable, and musically sensible.
-3. Do not invent official album/release names without source evidence.
-4. Do not use: Singles, Unknown Album, Misc, General, Music, Collection, or similar generic buckets.
-5. Live tracks stay in the same genre/style group when musically similar; live is not a separate album by default.
-6. Same input must always return the same JSON and grouping.
-7. Every listed track path must appear in exactly one group.
-8. Use only the provided track paths.
+1. Prefer fewer coherent groups over many narrow groups.
+2. Merge similar tracks into the same group.
+3. Live, official video, lyrics, AMV, and animated music video must NOT create separate groups.
+4. Do not output group names. Only assign track paths to groups.
+5. Same input must always return the same JSON.
+6. Every track path must appear in exactly one group.
 """
 
 
@@ -126,57 +120,45 @@ def _call_ollama_grouping(*, base_url: str, model: str, prompt: str, timeout_sec
     return _extract_json_object(content)
 
 
-def _cluster_tracks_by_theme(tracks: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+def _cluster_tracks_by_key(tracks: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
     clusters: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for track in tracks:
         profile = track.get("semantic_profile") or {}
-        key = grouping_fingerprint(profile) or "library tracks"
+        key = canonical_cluster_key(profile)
         clusters[key].append(track)
     return dict(clusters)
 
 
-def _build_group_name_for_cluster(
-    tracks: list[dict[str, Any]],
-    *,
-    model_name: str | None = None,
-    artist: str | None = None,
-) -> tuple[str, str]:
-    representative = tracks[0]
-    profile = representative.get("semantic_profile") or {}
-    artist_name = normalize_artist(representative.get("artist"))
-    if model_name:
-        validated = validate_group_name(
-            model_name,
-            profile=profile,
-            track=representative,
-            artist=artist or artist_name,
-        )
-        reason = f"Grouped by {profile.get('likely_group_theme') or 'shared metadata'}."
-        return validated, reason
-    name = build_deterministic_group_name(profile)
-    reason = f"Deterministic group from semantic profile: {profile.get('likely_group_theme') or 'shared metadata'}."
-    return name, reason
+def _finalize_group(artist: str, cluster: list[dict[str, Any]], *, reason: str) -> dict[str, Any]:
+    profiles = [track.get("semantic_profile") or {} for track in cluster]
+    member_keys = [track_key(track) for track in cluster]
+    member_paths = [str(track.get("path") or "") for track in cluster if track.get("path")]
+    group_name = canonicalize_group_name(build_group_name_from_cluster(profiles), profiles)
+    cluster_key = canonical_cluster_key(profiles[0]) if profiles else "library"
+    group_id = stable_group_id(artist_scope=artist, group_name=group_name, member_track_keys=member_keys)
+    return {
+        "group_id": group_id,
+        "name": group_name,
+        "artist_scope": artist,
+        "reason": reason,
+        "track_paths": member_paths,
+        "track_keys": member_keys,
+        "profiles": profiles,
+        "semantic_fingerprint": cluster_key,
+    }
 
 
 def _plan_artist_groups_deterministic(artist: str, tracks: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    groups: list[dict[str, Any]] = []
-    for theme, cluster in sorted(_cluster_tracks_by_theme(tracks).items(), key=lambda item: item[0]):
-        member_keys = [track_key(track) for track in cluster]
-        member_paths = [str(track.get("path") or "") for track in cluster if track.get("path")]
-        group_name, reason = _build_group_name_for_cluster(cluster)
-        group_id = stable_group_id(artist_scope=artist, group_name=group_name, member_track_keys=member_keys)
-        groups.append(
-            {
-                "group_id": group_id,
-                "name": group_name,
-                "artist_scope": artist,
-                "reason": reason,
-                "track_paths": member_paths,
-                "track_keys": member_keys,
-                "semantic_fingerprint": theme,
-            }
+    groups = [
+        _finalize_group(
+            artist,
+            cluster,
+            reason="Clustered by dominant musical style and genre.",
         )
-    return groups
+        for _key, cluster in sorted(_cluster_tracks_by_key(tracks).items(), key=lambda item: item[0])
+    ]
+    merged, _merge_log = finalize_artist_groups(artist, groups)
+    return _refresh_group_ids(artist, merged)
 
 
 def _plan_artist_groups_with_ollama(
@@ -210,35 +192,40 @@ def _plan_artist_groups_with_ollama(
         return None
 
     path_lookup = {str(track.get("path") or ""): track for track in tracks}
-    groups: list[dict[str, Any]] = []
+    raw_clusters: list[list[dict[str, Any]]] = []
+    assigned: set[str] = set()
     for raw_group in parsed["groups"]:
         if not isinstance(raw_group, dict):
             continue
-        member_paths = [str(path) for path in (raw_group.get("track_paths") or []) if str(path) in path_lookup]
-        if not member_paths:
+        cluster = [path_lookup[path] for path in (raw_group.get("track_paths") or []) if str(path) in path_lookup]
+        if not cluster:
             continue
-        cluster = [path_lookup[path] for path in member_paths]
-        member_keys = [track_key(track) for track in cluster]
-        group_name, reason = _build_group_name_for_cluster(
-            cluster,
-            model_name=str(raw_group.get("name") or "").strip() or None,
-            artist=artist,
-        )
-        group_id = stable_group_id(artist_scope=artist, group_name=group_name, member_track_keys=member_keys)
-        groups.append(
+        raw_clusters.append(cluster)
+        assigned.update(str(track.get("path") or "") for track in cluster)
+
+    if assigned != {str(track.get("path") or "") for track in tracks}:
+        return None
+
+    groups = [
+        _finalize_group(artist, cluster, reason="AI grouped similar tracks; name derived from cluster profile.")
+        for cluster in raw_clusters
+    ]
+    merged, _merge_log = finalize_artist_groups(artist, groups)
+    return _refresh_group_ids(artist, merged)
+
+
+def _refresh_group_ids(artist: str, groups: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    refreshed: list[dict[str, Any]] = []
+    for group in groups:
+        member_keys = list(group.get("track_keys") or [])
+        group_name = str(group.get("name") or "")
+        refreshed.append(
             {
-                "group_id": group_id,
-                "name": group_name,
-                "artist_scope": artist,
-                "reason": str(raw_group.get("reason") or reason).strip() or reason,
-                "track_paths": member_paths,
-                "track_keys": member_keys,
-                "semantic_fingerprint": semantic_fingerprint(cluster[0].get("semantic_profile") or {}),
+                **group,
+                "group_id": stable_group_id(artist_scope=artist, group_name=group_name, member_track_keys=member_keys),
             }
         )
-    if len({path for group in groups for path in group["track_paths"]}) != len(tracks):
-        return None
-    return groups
+    return refreshed
 
 
 def plan_library_album_groups(
@@ -257,7 +244,7 @@ def plan_library_album_groups(
 
     assignments: dict[str, dict[str, Any]] = {}
     groups_out: list[dict[str, Any]] = []
-    move_plans: list[dict[str, str]] = []
+    merge_decisions: list[dict[str, str]] = []
 
     by_artist: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for track in sorted_tracks:
@@ -279,7 +266,6 @@ def plan_library_album_groups(
     for artist in sorted(by_artist):
         artist_tracks = by_artist[artist]
         if not rebuild:
-            preserved: list[dict[str, Any]] = []
             pending: list[dict[str, Any]] = []
             for track in artist_tracks:
                 key = track_key(track)
@@ -305,7 +291,6 @@ def plan_library_album_groups(
                             "semantic_fingerprint": existing_group.get("semantic_fingerprint"),
                         }
                     )
-                    preserved.append(track)
                 else:
                     pending.append(track)
             artist_tracks = pending
@@ -313,11 +298,20 @@ def plan_library_album_groups(
         if not artist_tracks:
             continue
 
-        planned_groups = None
+        pre_merge_groups = _plan_artist_groups_deterministic(artist, artist_tracks)
+        planned_groups = pre_merge_groups
         if use_local_ai and config.metadata_enabled and config.provider == "ollama" and config.model:
-            planned_groups = _plan_artist_groups_with_ollama(artist, artist_tracks, config=config)
-        if not planned_groups:
-            planned_groups = _plan_artist_groups_deterministic(artist, artist_tracks)
+            ollama_groups = _plan_artist_groups_with_ollama(artist, artist_tracks, config=config)
+            if ollama_groups:
+                planned_groups, ai_merge_log = finalize_artist_groups(artist, ollama_groups)
+                planned_groups = _refresh_group_ids(artist, planned_groups)
+                merge_decisions.extend(ai_merge_log)
+
+        deterministic_groups, det_merge_log = finalize_artist_groups(artist, pre_merge_groups)
+        deterministic_groups = _refresh_group_ids(artist, deterministic_groups)
+        if len(deterministic_groups) <= len(planned_groups):
+            planned_groups = deterministic_groups
+            merge_decisions.extend(det_merge_log)
 
         for group in planned_groups:
             groups_out.append(group)
@@ -353,7 +347,8 @@ def plan_library_album_groups(
         "classifier_version": CLASSIFIER_VERSION,
         "groups": groups_out,
         "assignments": assignments,
-        "move_plans": move_plans,
+        "merge_decisions": merge_decisions,
+        "move_plans": [],
     }
 
 
@@ -365,6 +360,10 @@ def _live_collection_for_track(track: dict[str, Any]) -> str | None:
     tags = {_normalize_key(tag) for tag in (track.get("tags") or [])}
     if style == "live" or "live" in tags:
         return "Live"
+    if _normalize_key(profile.get("performance_type")) == "video" or "music video" in {
+        _normalize_key(marker) for marker in (profile.get("context_markers") or [])
+    }:
+        return None
     return track.get("collection")
 
 
@@ -402,7 +401,6 @@ def build_move_plans_for_assignments(
             continue
         target_album = str(assignment.get("album") or "")
         artist = normalize_artist(track.get("artist"))
-        current_album = sanitize_component(str(track.get("album") or ""))
         parent_album = sanitize_component(str(Path(path).parent.name)) if path else ""
         needs_move = is_repairable_source_album_folder(parent_album) or (
             parent_album and parent_album != sanitize_component(target_album)
@@ -415,8 +413,20 @@ def build_move_plans_for_assignments(
     return plans
 
 
-def format_album_group_plan(plan: dict[str, Any], *, move_plans: list[dict[str, str]] | None = None) -> str:
+def format_album_group_plan(
+    plan: dict[str, Any],
+    *,
+    move_plans: list[dict[str, str]] | None = None,
+) -> str:
     lines: list[str] = []
+    if plan.get("merge_decisions"):
+        lines.append("Merge decisions:")
+        for item in plan["merge_decisions"]:
+            lines.append(
+                f"  {item.get('artist_scope')}: {item.get('merged_from')} -> {item.get('merged_to')} ({item.get('cluster_key')})"
+            )
+        lines.append("")
+
     move_lookup: dict[str, list[dict[str, str]]] = defaultdict(list)
     for move in move_plans or []:
         move_lookup[str(move.get("artist") or "")].append(move)
@@ -424,6 +434,8 @@ def format_album_group_plan(plan: dict[str, Any], *, move_plans: list[dict[str, 
     for group in plan.get("groups", []):
         lines.append(f"Artist: {group.get('artist_scope')}")
         lines.append(f"Group: {group.get('name')}")
+        if group.get("merge_from"):
+            lines.append(f"Merged from: {' + '.join(group.get('merge_from') or [])}")
         lines.append(f"Reason: {group.get('reason')}")
         lines.append("Tracks:")
         for path in group.get("track_paths", []):

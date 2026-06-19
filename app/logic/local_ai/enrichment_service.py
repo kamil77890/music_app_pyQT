@@ -693,6 +693,7 @@ def enrich_library_batch(
 
         move_plans = build_move_plans_for_assignments(all_enriched, group_plan["assignments"], music_dir=lib_dir)
         summary["album_groups"] = group_plan.get("groups", [])
+        summary["merge_decisions"] = group_plan.get("merge_decisions", [])
         summary["album_group_plan_text"] = format_album_group_plan(group_plan, move_plans=move_plans)
         summary["move_plans"].extend(move_plans)
 

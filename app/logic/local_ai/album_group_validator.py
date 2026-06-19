@@ -3,6 +3,11 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from app.logic.local_ai.album_group_canonical import (
+    build_group_name_from_cluster,
+    canonicalize_group_name,
+    is_weak_group_name,
+)
 from app.logic.local_ai.metadata_normalizer import (
     UNKNOWN_ALBUM,
     is_garbage_genre,
@@ -11,21 +16,6 @@ from app.logic.local_ai.metadata_normalizer import (
 )
 
 _MAX_GROUP_NAME_LEN = 80
-_BANNED_GROUP_WORDS = frozenset(
-    {
-        "unknown",
-        "singles",
-        "misc",
-        "general",
-        "music",
-        "collection",
-        "other",
-        "youtube",
-        "n/a",
-        "none",
-        "null",
-    }
-)
 _REJECTED_ALBUM_LABELS = frozenset(
     {
         "unknown album",
@@ -97,13 +87,37 @@ def is_legacy_managed_album_folder(name: Any) -> bool:
     return _normalize_key(cleaned) in lookup
 
 
+_AI_MANAGED_FOLDER_PREFIXES = (
+    "music video",
+    "live ",
+    "soundtrack ",
+    "nightcore ",
+)
+
+
+def is_ai_managed_album_folder(name: Any) -> bool:
+    cleaned = sanitize_group_name(name)
+    if not cleaned:
+        return False
+    if is_legacy_managed_album_folder(cleaned):
+        return True
+    normalized = _normalize_key(cleaned)
+    if any(normalized.startswith(prefix) for prefix in _AI_MANAGED_FOLDER_PREFIXES):
+        return True
+    if normalized.endswith(" amv") or normalized.endswith(" nightcore") or " amv " in normalized:
+        return True
+    if is_weak_group_name(cleaned):
+        return True
+    return False
+
+
 def is_repairable_source_album_folder(folder_name: str) -> bool:
     name = sanitize_group_name(folder_name)
     if not name:
         return False
     if _normalize_key(name) == _normalize_key(UNKNOWN_ALBUM):
         return True
-    return is_legacy_managed_album_folder(name)
+    return is_ai_managed_album_folder(name)
 
 
 def _album_matches_title_or_artist(album: str, track: dict[str, Any] | None) -> bool:
@@ -123,7 +137,7 @@ def is_official_or_existing_album(value: Any, *, track: dict[str, Any] | None = 
     album = sanitize_group_name(value)
     if not album or is_missing_album(album) or _normalize_key(album) in _REJECTED_ALBUM_LABELS:
         return False
-    if is_legacy_managed_album_folder(album):
+    if is_ai_managed_album_folder(album):
         return False
     if is_garbage_genre(album):
         return False
@@ -132,80 +146,24 @@ def is_official_or_existing_album(value: Any, *, track: dict[str, Any] | None = 
     return True
 
 
-def _contains_banned_word(name: str) -> bool:
-    words = set(_normalize_key(name).split())
-    return bool(words & _BANNED_GROUP_WORDS)
-
-
-def is_weak_group_name(name: str, *, track: dict[str, Any] | None = None, artist: str | None = None) -> bool:
-    cleaned = sanitize_group_name(name)
-    if not cleaned:
-        return True
-    if _contains_banned_word(cleaned):
-        return True
-    if track and _album_matches_title_or_artist(cleaned, track):
-        return True
-    if artist and _normalize_key(cleaned) == _normalize_key(artist):
-        return True
-    word_count = len(cleaned.split())
-    if word_count < 1 or word_count > 6:
-        return True
-    return False
-
-
-def _title_case_phrase(value: str) -> str:
-    return " ".join(part.capitalize() for part in value.split())
-
-
 def build_deterministic_group_name(profile: dict[str, Any]) -> str:
-    context = [str(item) for item in (profile.get("context_markers") or []) if str(item).strip()]
-    styles = [str(item) for item in (profile.get("style_markers") or []) if str(item).strip()]
-    genre = _normalize_key(profile.get("main_genre") or "")
-    parts: list[str] = []
-
-    if context and styles:
-        parts.append(_title_case_phrase(f"{context[0]} {styles[0]}"))
-        if len(styles) > 1:
-            parts.append(_title_case_phrase(styles[1]))
-    elif styles:
-        if genre and genre not in {_normalize_key(style) for style in styles}:
-            parts.append(_title_case_phrase(f"{styles[0]} {genre}"))
-        else:
-            parts.append(_title_case_phrase(styles[0]))
-    elif context:
-        parts.append(_title_case_phrase(f"{context[0]} {genre or 'tracks'}"))
-    elif genre:
-        parts.append(_title_case_phrase(f"{genre} tracks"))
-    else:
-        parts.append("Library Tracks")
-
-    candidate = " ".join(parts[:2]).strip()
-    return sanitize_group_name(candidate) or "Library Tracks"
-
-
-def _strip_artist_suffix(name: str, artist: str | None) -> str:
-    if not artist:
-        return name
-    artist_norm = _normalize_key(artist)
-    name_norm = _normalize_key(name)
-    if name_norm == artist_norm:
-        return ""
-    for separator in (" - ", " – "):
-        if separator in name and _normalize_key(name.split(separator)[-1]) == artist_norm:
-            return name.rsplit(separator, 1)[0].strip()
-    if name_norm.endswith(f" {artist_norm}"):
-        return name[: -len(artist)].strip(" -")
-    return name
+    return build_group_name_from_cluster([profile])
 
 
 def validate_group_name(
     raw_name: Any,
     *,
-    profile: dict[str, Any],
+    profile: dict[str, Any] | None = None,
+    profiles: list[dict[str, Any]] | None = None,
     track: dict[str, Any] | None = None,
     artist: str | None = None,
 ) -> str:
-    cleaned = sanitize_group_name(_strip_artist_suffix(sanitize_group_name(raw_name), artist))
-    if cleaned and not is_weak_group_name(cleaned, track=track, artist=artist):
-        return cleaned
-    return build_deterministic_group_name(profile)
+    cluster_profiles = profiles or ([profile] if profile else [])
+    if artist and cluster_profiles:
+        artist_norm = _normalize_key(artist)
+        cleaned = sanitize_group_name(raw_name)
+        if cleaned and _normalize_key(cleaned) == artist_norm:
+            return build_group_name_from_cluster(cluster_profiles)
+    if cluster_profiles:
+        return canonicalize_group_name(str(raw_name or ""), cluster_profiles)
+    return sanitize_group_name(raw_name) or "Library"

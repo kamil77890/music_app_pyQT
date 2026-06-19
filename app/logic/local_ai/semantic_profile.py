@@ -21,11 +21,22 @@ def _normalize_key(value: Any) -> str:
     return re.sub(r"\s+", " ", str(value or "").strip().lower())
 
 
+def _should_exclude_album_from_inference(track: dict[str, Any]) -> bool:
+    if track.get("_repair_managed_albums"):
+        return True
+    album = track.get("album") or ""
+    if not album:
+        return False
+    from app.logic.local_ai.album_group_validator import is_ai_managed_album_folder
+
+    return is_ai_managed_album_folder(album)
+
+
 def _track_haystack(track: dict[str, Any]) -> str:
-    return " ".join(
-        str(track.get(key) or "")
-        for key in ("title", "artist", "album", "source_title", "sourceTitle", "description")
-    )
+    keys = ("title", "artist", "source_title", "sourceTitle", "description")
+    if not _should_exclude_album_from_inference(track):
+        keys = ("title", "artist", "album", "source_title", "sourceTitle", "description")
+    return " ".join(str(track.get(key) or "") for key in keys)
 
 
 def _dedupe_preserve(items: list[str]) -> list[str]:
@@ -38,6 +49,22 @@ def _dedupe_preserve(items: list[str]) -> list[str]:
         seen.add(key)
         out.append(item)
     return out
+
+
+def _filter_style_markers(
+    style_markers: list[str],
+    *,
+    context_markers: list[str],
+    track: dict[str, Any],
+) -> list[str]:
+    styles = {_normalize_key(item) for item in style_markers}
+    contexts = {_normalize_key(item) for item in context_markers}
+    haystack = _normalize_key(_track_haystack(track))
+    filtered = list(style_markers)
+    if "nightcore" in styles and "nightcore" not in haystack:
+        if "piano" in styles and ({"anime", "soundtrack"} & contexts or "anime" in haystack or "op" in haystack):
+            filtered = [item for item in filtered if _normalize_key(item) != "nightcore"]
+    return _dedupe_preserve(filtered)
 
 
 def infer_performance_type(track: dict[str, Any], *, style: str | None = None, tags: list[str] | None = None) -> str:
@@ -53,17 +80,34 @@ def infer_performance_type(track: dict[str, Any], *, style: str | None = None, t
     return "studio"
 
 
+def _normalize_context_markers(markers: list[str]) -> list[str]:
+    normalized: list[str] = []
+    for marker in markers:
+        key = _normalize_key(marker)
+        if not key:
+            continue
+        if "anime" in key:
+            normalized.append("anime")
+        if "soundtrack" in key or "ost" in key or "amv" in key:
+            normalized.append("soundtrack")
+        if _VIDEO_MARKER.search(key) or key in {"music video", "mv"}:
+            normalized.append("music video")
+        elif key not in {"anime", "soundtrack", "music video"}:
+            normalized.append(marker.strip())
+    return _dedupe_preserve(normalized)
+
+
 def infer_context_markers(track: dict[str, Any], *, tags: list[str] | None = None) -> list[str]:
     haystack = _normalize_key(_track_haystack(track))
     tag_blob = " ".join(_normalize_key(tag) for tag in (tags or []))
     markers: list[str] = []
-    if _ANIME_MARKER.search(haystack) or "anime" in tag_blob:
+    if _ANIME_MARKER.search(haystack) or "anime" in tag_blob or "amv" in haystack:
         markers.append("anime")
-    if _OST_MARKER.search(haystack) or "ost" in tag_blob or "soundtrack" in tag_blob:
+    if _OST_MARKER.search(haystack) or "ost" in tag_blob or "soundtrack" in tag_blob or "amv" in haystack:
         markers.append("soundtrack")
-    if _VIDEO_MARKER.search(haystack):
+    if _VIDEO_MARKER.search(haystack) or "amv" in haystack:
         markers.append("music video")
-    return _dedupe_preserve(markers)
+    return _normalize_context_markers(markers)
 
 
 def infer_style_markers(track: dict[str, Any], *, style: str | None = None, tags: list[str] | None = None) -> list[str]:
@@ -119,46 +163,52 @@ def build_semantic_profile(
     tags: list[str] | None = None,
     model_profile: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    broad_genre = normalize_genre(genre)
+    style_markers = infer_style_markers(track, style=style, tags=tags)
+    context_markers = infer_context_markers(track, tags=tags)
+    performance_type = infer_performance_type(track, style=style, tags=tags)
+    theme = infer_likely_group_theme(track, genre=genre, style=style, tags=tags)
+
     fallback = {
-        "main_genre": normalize_genre(genre),
-        "style_markers": infer_style_markers(track, style=style, tags=tags),
-        "context_markers": infer_context_markers(track, tags=tags),
-        "performance_type": infer_performance_type(track, style=style, tags=tags),
-        "likely_group_theme": infer_likely_group_theme(track, genre=genre, style=style, tags=tags),
+        "main_genre": broad_genre,
+        "broad_genre": broad_genre,
+        "style_markers": _filter_style_markers(style_markers, context_markers=context_markers, track=track),
+        "context_markers": context_markers,
+        "performance_type": performance_type,
+        "likely_group_theme": theme,
+        "theme": theme,
+        "energy": "",
     }
     if not isinstance(model_profile, dict):
         return fallback
 
-    main_genre = normalize_genre(model_profile.get("main_genre") or fallback["main_genre"])
-    style_markers = _dedupe_preserve(
-        [str(item).strip() for item in (model_profile.get("style_markers") or []) if str(item).strip()]
-        or fallback["style_markers"]
-    )
-    context_markers = _dedupe_preserve(
-        [str(item).strip() for item in (model_profile.get("context_markers") or []) if str(item).strip()]
-        or fallback["context_markers"]
-    )
+    main_genre = normalize_genre(model_profile.get("main_genre") or model_profile.get("broad_genre") or fallback["main_genre"])
+    model_styles = [str(item).strip() for item in (model_profile.get("style_markers") or []) if str(item).strip()]
+    model_contexts = [str(item).strip() for item in (model_profile.get("context_markers") or []) if str(item).strip()]
+    style_markers = _dedupe_preserve(model_styles + fallback["style_markers"])
+    context_markers = _normalize_context_markers(_dedupe_preserve(model_contexts + fallback["context_markers"]))
     performance_type = str(model_profile.get("performance_type") or fallback["performance_type"]).strip().lower() or fallback["performance_type"]
-    likely_group_theme = str(model_profile.get("likely_group_theme") or "").strip().lower() or fallback["likely_group_theme"]
+    theme = str(model_profile.get("theme") or model_profile.get("likely_group_theme") or "").strip().lower() or fallback["theme"]
+    style_markers = _filter_style_markers(style_markers, context_markers=context_markers, track=track)
     return {
         "main_genre": main_genre,
+        "broad_genre": main_genre,
         "style_markers": style_markers,
         "context_markers": context_markers,
         "performance_type": performance_type,
-        "likely_group_theme": likely_group_theme,
+        "likely_group_theme": theme,
+        "theme": theme,
+        "energy": str(model_profile.get("energy") or "").strip(),
     }
 
 
 def semantic_fingerprint(profile: dict[str, Any]) -> str:
-    return _normalize_key(profile.get("likely_group_theme") or "")
+    from app.logic.local_ai.album_group_canonical import canonical_cluster_key
+
+    return canonical_cluster_key(profile)
 
 
 def grouping_fingerprint(profile: dict[str, Any]) -> str:
-    theme = _normalize_key(profile.get("likely_group_theme") or "")
-    theme = re.sub(r"\blive\b", "", theme).strip()
-    if not theme:
-        styles = " ".join(_normalize_key(item) for item in (profile.get("style_markers") or []))
-        theme = re.sub(r"\blive\b", "", styles).strip()
-    if not theme:
-        theme = _normalize_key(profile.get("main_genre") or "library tracks")
-    return re.sub(r"\s+", " ", theme).strip()
+    from app.logic.local_ai.album_group_canonical import canonical_cluster_key
+
+    return canonical_cluster_key(profile)

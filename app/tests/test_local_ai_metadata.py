@@ -457,7 +457,7 @@ def test_production_classifier_has_no_hardcoded_music_mappings():
         classifier_dir / "album_group_validator.py",
         classifier_dir / "album_group_registry.py",
         classifier_dir / "semantic_profile.py",
-        classifier_dir / "album_validator.py",
+        classifier_dir / "album_group_canonical.py",
     ]
 
     for file_path in production_files:

@@ -8,6 +8,7 @@ from urllib import error, request
 from app.logic.local_ai.classification_validator import validate_model_classification
 from app.logic.local_ai.classifier_base import LocalMetadataClassifier
 from app.logic.local_ai.fallback_classifier import FallbackClassifier
+from app.logic.local_ai.album_group_validator import is_ai_managed_album_folder
 from app.logic.local_ai.metadata_normalizer import UNKNOWN_GENRE, calculate_metadata_quality, normalize_album, normalize_genre
 from app.logic.local_ai.semantic_profile import build_semantic_profile
 
@@ -147,10 +148,13 @@ class OllamaClassifier(LocalMetadataClassifier):
 
     def classify(self, track: dict[str, Any]) -> dict[str, Any]:
         fallback = self._fallback.classify(track)
+        album_for_prompt = str(track.get("album") or "")
+        if track.get("_repair_managed_albums") or is_ai_managed_album_folder(album_for_prompt):
+            album_for_prompt = ""
         prompt = _CLASSIFICATION_PROMPT.format(
             title=track.get("title") or "",
             artist=track.get("artist") or "",
-            album=track.get("album") or "",
+            album=album_for_prompt,
             existing_genre=track.get("genre") or "",
             source_title=track.get("source_title") or track.get("sourceTitle") or "",
             description=track.get("description") or "",
