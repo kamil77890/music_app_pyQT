@@ -3,7 +3,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Any
 
-CLASSIFIER_VERSION = "local-ai-v2-no-hardcoded-rules"
+CLASSIFIER_VERSION = "local-ai-v3-validated-output"
 
 
 def default_classification_result(*, metadata_source: str = "fallback", reason: str = "") -> dict[str, Any]:
@@ -12,6 +12,7 @@ def default_classification_result(*, metadata_source: str = "fallback", reason: 
         "primary_genre": "Unknown Genre",
         "style": None,
         "subgenre": None,
+        "collection": None,
         "mood": [],
         "tags": [],
         "metadata_quality": "low",

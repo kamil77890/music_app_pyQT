@@ -59,6 +59,7 @@ def _cache_entry_complete(entry: Any, *, config: LocalAIConfig) -> bool:
         "primary_genre",
         "style",
         "subgenre",
+        "collection",
         "mood",
         "tags",
         "metadata_quality",

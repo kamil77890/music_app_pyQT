@@ -43,6 +43,7 @@ class FallbackClassifier(LocalMetadataClassifier):
             "primary_genre": primary_genre,
             "style": None,
             "subgenre": None,
+            "collection": None,
             "mood": [],
             "tags": list(track.get("tags") or []),
             "metadata_quality": calculate_metadata_quality(working),

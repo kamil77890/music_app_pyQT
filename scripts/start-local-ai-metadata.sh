@@ -12,7 +12,7 @@ if [ -f .env ]; then
 fi
 
 OLLAMA_URL="${LOCAL_AI_OLLAMA_URL:-http://localhost:11434}"
-MODEL="${LOCAL_AI_MODEL:-qwen3:1.7b}"
+MODEL="${LOCAL_AI_MODEL:-qwen2.5:3b}"
 
 echo "Local AI metadata checker"
 echo "========================="
@@ -36,15 +36,15 @@ fi
 if [ -z "$MODEL" ]; then
   echo "LOCAL_AI_MODEL is empty."
   echo "Set LOCAL_AI_MODEL in .env to a locally installed model."
-  echo "Example: LOCAL_AI_MODEL=qwen3:1.7b"
-  echo "Install: ollama pull qwen3:1.7b"
+  echo "Example: LOCAL_AI_MODEL=qwen2.5:3b"
+  echo "Install: ollama pull qwen2.5:3b"
   echo "This script does not download models automatically."
   exit 1
 fi
 
 if ! ollama list | awk 'NR>1 {print $1}' | grep -Fxq "$MODEL"; then
   echo "Model not found locally: ${MODEL}"
-  echo "Run: ollama pull qwen3:1.7b"
+  echo "Run: ollama pull qwen2.5:3b"
   echo "This script does not download models automatically."
   exit 1
 fi

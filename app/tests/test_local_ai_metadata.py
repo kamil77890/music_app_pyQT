@@ -137,7 +137,7 @@ def test_ollama_classifier_uses_model_response(monkeypatch):
     assert result["style"] == "Piano"
     assert result["subgenre"] == "Solo Piano"
     assert result["mood"] == ["calm"]
-    assert result["tags"] == ["instrumental"]
+    assert result["tags"] == ["Instrumental"]
     assert result["metadata_source"] == "local_ai"
     assert result["classification_confidence"] == 0.82
 
@@ -225,6 +225,7 @@ def test_enrichment_batch_uses_cache_without_reclassifying(monkeypatch, tmp_path
         "primary_genre": "Rock",
         "style": None,
         "subgenre": None,
+        "collection": None,
         "mood": [],
         "tags": ["energetic"],
         "metadata_quality": "high",
@@ -389,7 +390,7 @@ def test_get_classifier_uses_fallback_when_ollama_model_missing(monkeypatch):
     assert isinstance(classifier, FallbackClassifier)
 
 
-def test_default_local_ai_config_uses_qwen3_1_7b(monkeypatch):
+def test_default_local_ai_config_uses_qwen2_5_3b(monkeypatch):
     from app.logic.local_ai.config import get_config
 
     monkeypatch.delenv("LOCAL_AI_MODEL", raising=False)
@@ -398,22 +399,23 @@ def test_default_local_ai_config_uses_qwen3_1_7b(monkeypatch):
 
     config = get_config()
 
-    assert config.model == "qwen3:1.7b"
-    assert config.timeout_seconds == 45
+    assert config.model == "qwen2.5:3b"
+    assert config.timeout_seconds == 60
     assert config.batch_size == 5
 
 
-def test_start_script_suggests_pull_qwen3_1_7b():
+def test_start_script_suggests_pull_qwen2_5_3b():
     script = Path(__file__).resolve().parents[2] / "scripts" / "start-local-ai-metadata.sh"
     source = script.read_text(encoding="utf-8")
 
-    assert 'MODEL="${LOCAL_AI_MODEL:-qwen3:1.7b}"' in source
-    assert "Run: ollama pull qwen3:1.7b" in source
+    assert 'MODEL="${LOCAL_AI_MODEL:-qwen2.5:3b}"' in source
+    assert "Run: ollama pull qwen2.5:3b" in source
 
 
 def test_production_classifier_has_no_hardcoded_music_mappings():
     classifier_dir = Path(__file__).resolve().parents[1] / "logic" / "local_ai"
     production_files = [
+        classifier_dir / "classification_validator.py",
         classifier_dir / "genre_classifier.py",
         classifier_dir / "fallback_classifier.py",
         classifier_dir / "ollama_classifier.py",

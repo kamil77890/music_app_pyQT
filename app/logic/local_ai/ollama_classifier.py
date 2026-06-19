@@ -5,16 +5,10 @@ import re
 from typing import Any
 from urllib import error, request
 
+from app.logic.local_ai.classification_validator import validate_model_classification
 from app.logic.local_ai.classifier_base import LocalMetadataClassifier
 from app.logic.local_ai.fallback_classifier import FallbackClassifier
-from app.logic.local_ai.metadata_normalizer import (
-    UNKNOWN_GENRE,
-    calculate_metadata_quality,
-    is_garbage_genre,
-    normalize_album,
-    normalize_artist,
-    normalize_genre,
-)
+from app.logic.local_ai.metadata_normalizer import UNKNOWN_GENRE, calculate_metadata_quality, normalize_genre
 
 _CLASSIFICATION_PROMPT = """You classify music metadata.
 
@@ -26,12 +20,13 @@ existing_genre: {existing_genre}
 source_title: {source_title}
 description: {description}
 
-Return strict JSON:
+Return strict JSON only. No markdown.
 {{
   "genre": string,
   "primary_genre": string,
   "style": string|null,
   "subgenre": string|null,
+  "collection": string|null,
   "mood": string[],
   "tags": string[],
   "metadata_quality": "low"|"medium"|"high",
@@ -40,12 +35,33 @@ Return strict JSON:
 }}
 
 Rules:
-- Do not use YouTube IDs, hashes, URLs, filenames, or random IDs as genre.
-- If unsure, use "Unknown Genre".
-- Do not invent album names.
-- Prefer broad, common music genres.
-- Keep tags short and useful.
-- Return only JSON.
+1. genre and primary_genre must be broad music genres only.
+   Valid examples: Rock, Pop, Electronic, Soundtrack, Classical, Hip Hop, Metal, Jazz, Folk, Ambient, Dance, Unknown Genre.
+
+2. Do not use franchise/media/context labels as genre:
+   Anime, Cyberpunk, Game, Movie, YouTube, TikTok, OP, ED, Lyrics.
+   Put these into collection or tags instead.
+
+3. Do not use performance/style labels as primary genre unless they are commonly used as genre.
+   Piano, Cover, Remix, Nightcore, Instrumental should usually go to style and/or tags.
+
+4. OST/opening/ending/anime/movie/game music should usually use:
+   primary_genre: Soundtrack
+   collection/tags: Anime, Game, Movie, OST, Opening, Ending, etc.
+
+5. If the title says Piano Version or piano arrangement:
+   style should include Piano.
+   Do not set genre to Piano.
+
+6. If the title says Nightcore:
+   style should include Nightcore.
+   Choose primary_genre by musical context if clear, otherwise Electronic or Unknown Genre.
+
+7. Do not use YouTube IDs, hashes, URLs, filenames, or random IDs as genre.
+8. If unsure, use "Unknown Genre".
+9. Do not invent album names.
+10. Keep tags short and useful.
+11. Keep reason short, factual, and based only on the provided metadata.
 """
 
 
@@ -66,24 +82,6 @@ def _extract_json_object(text: str) -> dict[str, Any] | None:
         return parsed if isinstance(parsed, dict) else None
     except json.JSONDecodeError:
         return None
-
-
-def _clean_optional_text(value: Any) -> str | None:
-    if value is None:
-        return None
-    text = str(value).strip()
-    return text or None
-
-
-def _clean_string_list(value: Any) -> list[str]:
-    if not isinstance(value, list):
-        return []
-    cleaned = []
-    for item in value:
-        text = str(item).strip()
-        if text:
-            cleaned.append(text)
-    return cleaned
 
 
 class OllamaClassifier(LocalMetadataClassifier):
@@ -143,38 +141,18 @@ class OllamaClassifier(LocalMetadataClassifier):
         if content:
             return content
 
-        # Some thinking models put JSON only in generate.thinking; keep a narrow fallback.
         thinking = str(body.get("thinking") or "").strip()
         return thinking
 
     def _merge_model_result(self, track: dict[str, Any], fallback: dict[str, Any], parsed: dict[str, Any]) -> dict[str, Any]:
-        genre = normalize_genre(parsed.get("genre"))
-        primary_genre = normalize_genre(parsed.get("primary_genre") or parsed.get("genre"))
+        validated = validate_model_classification(parsed, track=track)
+
+        genre = validated["genre"]
+        primary_genre = validated["primary_genre"]
         if genre == UNKNOWN_GENRE and primary_genre != UNKNOWN_GENRE:
             genre = primary_genre
         if primary_genre == UNKNOWN_GENRE and genre != UNKNOWN_GENRE:
             primary_genre = genre
-
-        style = _clean_optional_text(parsed.get("style"))
-        if style and is_garbage_genre(style):
-            style = None
-        subgenre = _clean_optional_text(parsed.get("subgenre"))
-        if subgenre and is_garbage_genre(subgenre):
-            subgenre = None
-
-        mood = _clean_string_list(parsed.get("mood"))
-        tags = _clean_string_list(parsed.get("tags"))
-        metadata_quality = str(parsed.get("metadata_quality") or fallback.get("metadata_quality") or "low").lower()
-        if metadata_quality not in {"low", "medium", "high"}:
-            metadata_quality = fallback.get("metadata_quality", "low")
-
-        try:
-            confidence = float(parsed.get("classification_confidence", 0.0))
-        except (TypeError, ValueError):
-            confidence = 0.0
-        confidence = max(0.0, min(round(confidence, 2), 1.0))
-
-        reason = str(parsed.get("reason") or "Classified by local model.").strip()
 
         working = {
             "title": fallback["title"],
@@ -182,6 +160,9 @@ class OllamaClassifier(LocalMetadataClassifier):
             "album": fallback["album"],
             "genre": genre,
         }
+        metadata_quality = validated["metadata_quality"]
+        if metadata_quality == "low":
+            metadata_quality = calculate_metadata_quality(working)
 
         return {
             "title": fallback["title"],
@@ -189,13 +170,14 @@ class OllamaClassifier(LocalMetadataClassifier):
             "album": fallback["album"],
             "genre": genre,
             "primary_genre": primary_genre,
-            "style": style,
-            "subgenre": subgenre,
-            "mood": mood,
-            "tags": tags,
-            "metadata_quality": metadata_quality if metadata_quality != "low" else calculate_metadata_quality(working),
+            "style": validated["style"],
+            "subgenre": validated["subgenre"],
+            "collection": validated["collection"],
+            "mood": validated["mood"],
+            "tags": validated["tags"],
+            "metadata_quality": metadata_quality,
             "metadata_source": "local_ai",
-            "classification_confidence": confidence,
-            "reason": reason,
+            "classification_confidence": validated["classification_confidence"],
+            "reason": validated["reason"],
             "videoId": fallback.get("videoId", ""),
         }
