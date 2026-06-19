@@ -4,6 +4,7 @@
   const CONTAINER_ID = "jf-music-saver";
   const POLL_INTERVAL = 5000;
   const TOAST_DURATION = 3500;
+  const MUSIC_ICON_URL = browser.runtime.getURL("icons/music_icon.png");
 
   let state = {
     videoId: null,
@@ -79,14 +80,6 @@
     c.setAttribute("r", String(r));
     if (extra) Object.entries(extra).forEach(([k, v]) => c.setAttribute(k, String(v)));
     return c;
-  }
-
-  function downloadSVG() {
-    const s = svgEl("0 0 24 24", 22, 22);
-    s.appendChild(path("M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"));
-    s.appendChild(polyline("7 10 12 15 17 10"));
-    s.appendChild(line(12, 15, 12, 3));
-    return s;
   }
 
   function spinnerSVG() {
@@ -364,7 +357,11 @@
     btnEl.id = "jf-floating-btn";
     btnEl.className = "jf-offline";
     btnEl.setAttribute("aria-label", "Save to Jellyfin");
-    btnEl.appendChild(downloadSVG());
+    const initImg = document.createElement("img");
+    initImg.src = MUSIC_ICON_URL;
+    initImg.alt = "Save to Jellyfin";
+    initImg.style.cssText = "width:28px;height:28px;border-radius:4px;object-fit:contain;display:block;";
+    btnEl.appendChild(initImg);
 
     tooltipEl = document.createElement("span");
     tooltipEl.id = "jf-tooltip";
@@ -403,7 +400,11 @@
   function setIconOnline() {
     if (!btnEl) return;
     btnEl.innerHTML = "";
-    btnEl.appendChild(downloadSVG());
+    const img = document.createElement("img");
+    img.src = MUSIC_ICON_URL;
+    img.alt = "Save to Jellyfin";
+    img.style.cssText = "width:28px;height:28px;border-radius:4px;object-fit:contain;display:block;";
+    btnEl.appendChild(img);
   }
 
   function setIconSaving() {

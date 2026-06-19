@@ -16,6 +16,8 @@
     "http://localhost:8000/*"
   ],
 
+  "web_accessible_resources": ["icons/music_icon.png"],
+
   "content_scripts": [
     {
       "matches": [
