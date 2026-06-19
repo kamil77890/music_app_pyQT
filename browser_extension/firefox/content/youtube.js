@@ -17,6 +17,7 @@
   let btnEl = null;
   let dotEl = null;
   let toastEl = null;
+  let tooltipEl = null;
 
   function getVideoId() {
     try {
@@ -30,123 +31,344 @@
     return document.title || "";
   }
 
-  // --- SVG download icon ---
+  // ===================== SVG HELPERS =====================
+
+  function svgEl(viewBox, w, h) {
+    const ns = "http://www.w3.org/2000/svg";
+    const s = document.createElementNS(ns, "svg");
+    s.setAttribute("viewBox", viewBox);
+    s.setAttribute("width", String(w));
+    s.setAttribute("height", String(h));
+    s.setAttribute("fill", "none");
+    s.setAttribute("stroke", "currentColor");
+    s.setAttribute("stroke-width", "2");
+    s.setAttribute("stroke-linecap", "round");
+    s.setAttribute("stroke-linejoin", "round");
+    return s;
+  }
+
+  function path(d) {
+    const ns = "http://www.w3.org/2000/svg";
+    const p = document.createElementNS(ns, "path");
+    p.setAttribute("d", d);
+    return p;
+  }
+
+  function polyline(points) {
+    const ns = "http://www.w3.org/2000/svg";
+    const pl = document.createElementNS(ns, "polyline");
+    pl.setAttribute("points", points);
+    return pl;
+  }
+
+  function line(x1, y1, x2, y2) {
+    const ns = "http://www.w3.org/2000/svg";
+    const l = document.createElementNS(ns, "line");
+    l.setAttribute("x1", String(x1));
+    l.setAttribute("y1", String(y1));
+    l.setAttribute("x2", String(x2));
+    l.setAttribute("y2", String(y2));
+    return l;
+  }
+
+  function circle(cx, cy, r, extra) {
+    const ns = "http://www.w3.org/2000/svg";
+    const c = document.createElementNS(ns, "circle");
+    c.setAttribute("cx", String(cx));
+    c.setAttribute("cy", String(cy));
+    c.setAttribute("r", String(r));
+    if (extra) Object.entries(extra).forEach(([k, v]) => c.setAttribute(k, String(v)));
+    return c;
+  }
+
   function downloadSVG() {
-    const ns = "http://www.w3.org/2000/svg";
-    const svg = document.createElementNS(ns, "svg");
-    svg.setAttribute("viewBox", "0 0 24 24");
-    svg.setAttribute("width", "22");
-    svg.setAttribute("height", "22");
-    svg.setAttribute("fill", "none");
-    svg.setAttribute("stroke", "currentColor");
-    svg.setAttribute("stroke-width", "2");
-    svg.setAttribute("stroke-linecap", "round");
-    svg.setAttribute("stroke-linejoin", "round");
-    const path1 = document.createElementNS(ns, "path");
-    path1.setAttribute("d", "M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4");
-    svg.appendChild(path1);
-    const path2 = document.createElementNS(ns, "polyline");
-    path2.setAttribute("points", "7 10 12 15 17 10");
-    svg.appendChild(path2);
-    const path3 = document.createElementNS(ns, "line");
-    path3.setAttribute("x1", "12");
-    path3.setAttribute("y1", "15");
-    path3.setAttribute("x2", "12");
-    path3.setAttribute("y2", "3");
-    svg.appendChild(path3);
-    return svg;
+    const s = svgEl("0 0 24 24", 22, 22);
+    s.appendChild(path("M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"));
+    s.appendChild(polyline("7 10 12 15 17 10"));
+    s.appendChild(line(12, 15, 12, 3));
+    return s;
   }
 
-  // --- Spinner SVG ---
   function spinnerSVG() {
-    const ns = "http://www.w3.org/2000/svg";
-    const svg = document.createElementNS(ns, "svg");
-    svg.setAttribute("viewBox", "0 0 24 24");
-    svg.setAttribute("width", "20");
-    svg.setAttribute("height", "20");
-    svg.setAttribute("fill", "none");
-    svg.setAttribute("stroke", "currentColor");
-    svg.setAttribute("stroke-width", "2.5");
-    svg.style.animation = "jf-spin 0.8s linear infinite";
-    const circle1 = document.createElementNS(ns, "circle");
-    circle1.setAttribute("cx", "12");
-    circle1.setAttribute("cy", "12");
-    circle1.setAttribute("r", "10");
-    circle1.setAttribute("stroke", "currentColor");
-    circle1.setAttribute("stroke-opacity", "0.2");
-    svg.appendChild(circle1);
-    const circle2 = document.createElementNS(ns, "path");
-    circle2.setAttribute("d", "M12 2a10 10 0 0 1 10 10");
-    svg.appendChild(circle2);
-    return svg;
+    const s = svgEl("0 0 24 24", 20, 20);
+    s.setAttribute("class", "jf-spinner-icon");
+    s.appendChild(circle(12, 12, 10, { "stroke-opacity": 0.2 }));
+    s.appendChild(path("M12 2a10 10 0 0 1 10 10"));
+    return s;
   }
 
-  // --- Checkmark SVG ---
   function checkSVG() {
-    const ns = "http://www.w3.org/2000/svg";
-    const svg = document.createElementNS(ns, "svg");
-    svg.setAttribute("viewBox", "0 0 24 24");
-    svg.setAttribute("width", "20");
-    svg.setAttribute("height", "20");
-    svg.setAttribute("fill", "none");
-    svg.setAttribute("stroke", "currentColor");
-    svg.setAttribute("stroke-width", "2.5");
-    svg.setAttribute("stroke-linecap", "round");
-    svg.setAttribute("stroke-linejoin", "round");
-    const path = document.createElementNS(ns, "polyline");
-    path.setAttribute("points", "20 6 9 17 4 12");
-    svg.appendChild(path);
-    return svg;
+    const s = svgEl("0 0 24 24", 20, 20);
+    s.setAttribute("class", "jf-check-icon");
+    s.appendChild(polyline("20 6 9 17 4 12"));
+    return s;
   }
 
-  // --- X mark SVG ---
   function xSVG() {
-    const ns = "http://www.w3.org/2000/svg";
-    const svg = document.createElementNS(ns, "svg");
-    svg.setAttribute("viewBox", "0 0 24 24");
-    svg.setAttribute("width", "20");
-    svg.setAttribute("height", "20");
-    svg.setAttribute("fill", "none");
-    svg.setAttribute("stroke", "currentColor");
-    svg.setAttribute("stroke-width", "2.5");
-    svg.setAttribute("stroke-linecap", "round");
-    svg.setAttribute("stroke-linejoin", "round");
-    const line1 = document.createElementNS(ns, "line");
-    line1.setAttribute("x1", "18");
-    line1.setAttribute("y1", "6");
-    line1.setAttribute("x2", "6");
-    line1.setAttribute("y2", "18");
-    svg.appendChild(line1);
-    const line2 = document.createElementNS(ns, "line");
-    line2.setAttribute("x1", "6");
-    line2.setAttribute("y1", "6");
-    line2.setAttribute("x2", "18");
-    line2.setAttribute("y2", "18");
-    svg.appendChild(line2);
-    return svg;
+    const s = svgEl("0 0 24 24", 20, 20);
+    s.setAttribute("class", "jf-x-icon");
+    s.appendChild(line(18, 6, 6, 18));
+    s.appendChild(line(6, 6, 18, 18));
+    return s;
   }
 
-  function injectSpinKeyframes() {
-    if (document.getElementById("jf-spin-style")) return;
+  // ===================== STYLE INJECTION =====================
+
+  function injectStyles() {
+    if (document.getElementById("jf-style")) return;
     const style = document.createElement("style");
-    style.id = "jf-spin-style";
-    style.textContent = "@keyframes jf-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }";
+    style.id = "jf-style";
+    style.textContent = `
+
+/* --- container --- */
+#jf-music-saver {
+  position: fixed;
+  bottom: 28px;
+  right: 28px;
+  z-index: 99999;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, sans-serif;
+  pointer-events: none;
+}
+#jf-music-saver > * { pointer-events: auto; }
+
+/* --- button base --- */
+#jf-floating-btn {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px solid rgba(255,255,255,0.08);
+  background: radial-gradient(circle at 35% 30%, rgba(40,40,70,0.95), rgba(15,12,35,0.98));
+  backdrop-filter: blur(8px);
+  box-shadow: 0 4px 16px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.06);
+  color: #a0a0c0;
+  cursor: default;
+  padding: 0;
+  outline: none;
+  transition: transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1),
+              box-shadow 0.25s ease,
+              border-color 0.25s ease,
+              color 0.25s ease,
+              background 0.25s ease;
+  position: relative;
+  user-select: none;
+}
+#jf-floating-btn:focus-visible {
+  box-shadow: 0 0 0 3px rgba(124,77,255,0.5);
+}
+
+/* --- online --- */
+#jf-floating-btn.jf-online {
+  color: #7ec8a8;
+  border-color: rgba(126,200,168,0.35);
+  background: radial-gradient(circle at 35% 30%, rgba(30,50,45,0.95), rgba(10,20,18,0.98));
+  box-shadow: 0 4px 20px rgba(126,200,168,0.15), inset 0 1px 0 rgba(126,200,168,0.08);
+  cursor: pointer;
+}
+#jf-floating-btn.jf-online:hover {
+  transform: scale(1.08);
+  border-color: rgba(126,200,168,0.6);
+  box-shadow: 0 6px 28px rgba(126,200,168,0.25), inset 0 1px 0 rgba(126,200,168,0.1);
+}
+#jf-floating-btn.jf-online:active {
+  transform: scale(0.93);
+  transition-duration: 0.05s;
+}
+
+/* --- offline --- */
+#jf-floating-btn.jf-offline {
+  color: #706090;
+  border-color: rgba(112,96,144,0.25);
+  background: radial-gradient(circle at 35% 30%, rgba(30,25,45,0.9), rgba(12,10,22,0.95));
+  box-shadow: 0 2px 10px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.03);
+  cursor: default;
+}
+
+/* --- saving --- */
+#jf-floating-btn.jf-saving {
+  color: #70b8ff;
+  border-color: rgba(112,184,255,0.4);
+  background: radial-gradient(circle at 35% 30%, rgba(20,40,60,0.95), rgba(8,16,28,0.98));
+  box-shadow: 0 4px 20px rgba(112,184,255,0.12), inset 0 1px 0 rgba(112,184,255,0.06);
+  cursor: default;
+  animation: jf-pulse 1.2s ease-in-out infinite;
+}
+
+/* --- saved --- */
+#jf-floating-btn.jf-saved {
+  color: #6cd4a0;
+  border-color: rgba(108,212,160,0.5);
+  background: radial-gradient(circle at 35% 30%, rgba(25,55,40,0.95), rgba(8,22,15,0.98));
+  box-shadow: 0 4px 24px rgba(108,212,160,0.2), inset 0 1px 0 rgba(108,212,160,0.08);
+  cursor: default;
+  animation: jf-success-pop 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+/* --- failed --- */
+#jf-floating-btn.jf-failed {
+  color: #f07060;
+  border-color: rgba(240,112,96,0.4);
+  background: radial-gradient(circle at 35% 30%, rgba(55,25,22,0.95), rgba(25,10,8,0.98));
+  box-shadow: 0 4px 20px rgba(240,112,96,0.12), inset 0 1px 0 rgba(240,112,96,0.06);
+  cursor: default;
+  animation: jf-error-shake 0.35s ease;
+}
+
+/* --- SVG icons inside button --- */
+#jf-floating-btn svg {
+  display: block;
+  filter: drop-shadow(0 0 4px currentColor);
+}
+
+/* --- status dot --- */
+#jf-status-dot {
+  position: absolute;
+  bottom: -2px;
+  right: -2px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 2.5px solid rgba(15,12,35,0.95);
+  transition: background 0.3s ease, box-shadow 0.3s ease;
+  pointer-events: none;
+  z-index: 2;
+}
+#jf-music-saver.jf-online-dot #jf-status-dot {
+  background: #4caf50;
+  box-shadow: 0 0 6px rgba(76,175,80,0.4);
+}
+#jf-music-saver.jf-offline-dot #jf-status-dot {
+  background: #ef5350;
+  box-shadow: 0 0 4px rgba(239,83,80,0.2);
+}
+#jf-music-saver.jf-busy-dot #jf-status-dot {
+  background: #ffa726;
+  box-shadow: 0 0 6px rgba(255,167,38,0.3);
+}
+
+/* --- tooltip --- */
+#jf-tooltip {
+  position: absolute;
+  bottom: 56px;
+  right: 4px;
+  padding: 5px 10px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+  background: rgba(15,12,35,0.92);
+  backdrop-filter: blur(8px);
+  border: 1px solid rgba(255,255,255,0.08);
+  color: #b0b0d0;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+  pointer-events: none;
+  opacity: 0;
+  transform: translateY(4px);
+  transition: opacity 0.18s ease, transform 0.18s ease;
+}
+#jf-floating-btn:hover + #jf-tooltip,
+#jf-tooltip.jf-visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+/* --- toast --- */
+#jf-toast {
+  position: fixed;
+  bottom: 84px;
+  right: 28px;
+  z-index: 99998;
+  padding: 10px 16px;
+  border-radius: 10px;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.4;
+  max-width: 280px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+  opacity: 0;
+  transform: translateY(8px) scale(0.96);
+  transition: opacity 0.22s ease, transform 0.22s cubic-bezier(0.34, 1.56, 0.64, 1);
+  box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(255,255,255,0.06);
+}
+#jf-toast.jf-toast-visible {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+}
+#jf-toast.jf-toast-success {
+  background: rgba(25,55,40,0.88);
+  color: #6cd4a0;
+  border-color: rgba(108,212,160,0.15);
+  box-shadow: 0 8px 24px rgba(0,0,0,0.5), inset 0 1px 0 rgba(108,212,160,0.06);
+}
+#jf-toast.jf-toast-error {
+  background: rgba(55,20,18,0.88);
+  color: #f07060;
+  border-color: rgba(240,112,96,0.15);
+  box-shadow: 0 8px 24px rgba(0,0,0,0.5), inset 0 1px 0 rgba(240,112,96,0.06);
+}
+
+/* --- keyframes --- */
+@keyframes jf-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+@keyframes jf-pulse {
+  0%, 100% { box-shadow: 0 4px 20px rgba(112,184,255,0.12), inset 0 1px 0 rgba(112,184,255,0.06); }
+  50% { box-shadow: 0 4px 28px rgba(112,184,255,0.22), inset 0 1px 0 rgba(112,184,255,0.1); }
+}
+@keyframes jf-success-pop {
+  0% { transform: scale(1); }
+  40% { transform: scale(1.12); }
+  100% { transform: scale(1); }
+}
+@keyframes jf-error-shake {
+  0%, 100% { transform: translateX(0); }
+  20% { transform: translateX(-3px); }
+  40% { transform: translateX(3px); }
+  60% { transform: translateX(-2px); }
+  80% { transform: translateX(2px); }
+}
+#jf-floating-btn.jf-saving svg.jf-spinner-icon {
+  animation: jf-spin 0.75s linear infinite;
+}
+#jf-floating-btn.jf-saved svg.jf-check-icon {
+  animation: jf-success-pop 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+`;
     document.head.appendChild(style);
   }
 
-  // --- Create floating icon ---
+  // ===================== UI BUILDING =====================
+
   function createUI() {
     if (document.getElementById(CONTAINER_ID)) return;
 
-    injectSpinKeyframes();
+    injectStyles();
 
     containerEl = document.createElement("div");
     containerEl.id = CONTAINER_ID;
+    containerEl.className = "jf-offline-dot";
 
     btnEl = document.createElement("button");
     btnEl.id = "jf-floating-btn";
-    btnEl.title = "Save to Jellyfin";
+    btnEl.className = "jf-offline";
+    btnEl.setAttribute("aria-label", "Save to Jellyfin");
     btnEl.appendChild(downloadSVG());
+
+    tooltipEl = document.createElement("span");
+    tooltipEl.id = "jf-tooltip";
+    tooltipEl.textContent = "Save to Jellyfin";
 
     dotEl = document.createElement("span");
     dotEl.id = "jf-status-dot";
@@ -155,6 +377,7 @@
     toastEl.id = "jf-toast";
 
     containerEl.appendChild(btnEl);
+    containerEl.appendChild(tooltipEl);
     containerEl.appendChild(dotEl);
     containerEl.appendChild(toastEl);
     document.body.appendChild(containerEl);
@@ -162,133 +385,21 @@
     btnEl.addEventListener("click", handleClick);
   }
 
-  function applyButtonStyle() {
-    if (!btnEl) return;
-    const online = state.backendOnline && !state.isSaving;
-    const isTransient = state.isSaving || state.backendOnline === null;
-    const offline = !state.backendOnline && !state.isSaving;
+  // ===================== STATE / UI UPDATE =====================
 
-    btnEl.style.cssText = [
-      "position:fixed",
-      "bottom:24px",
-      "right:24px",
-      "z-index:99999",
-      "width:46px",
-      "height:46px",
-      "border-radius:50%",
-      "display:flex",
-      "align-items:center",
-      "justify-content:center",
-      "cursor:" + (online ? "pointer" : "default"),
-      "border:2px solid " + (online ? "rgba(76,175,80,0.5)" : offline ? "rgba(239,83,80,0.3)" : "rgba(255,167,38,0.4)"),
-      "background:" + (online ? "rgba(20,20,40,0.92)" : offline ? "rgba(20,20,40,0.7)" : "rgba(20,20,40,0.85)"),
-      "color:" + (online ? "#81c784" : offline ? "#888" : "#ffa726"),
-      "box-shadow:" + (online ? "0 2px 16px rgba(76,175,80,0.3)" : offline ? "0 2px 8px rgba(0,0,0,0.3)" : "0 2px 12px rgba(255,167,38,0.2)"),
-      "transition:all 0.2s ease",
-      "backdrop-filter:blur(6px)",
-      "outline:none",
-      "padding:0",
-    ].join(";");
-
-    if (online) {
-      btnEl.addEventListener("mouseenter", onBtnHoverIn);
-      btnEl.addEventListener("mouseleave", onBtnHoverOut);
-      btnEl.addEventListener("mousedown", onBtnPress);
-      btnEl.addEventListener("mouseup", onBtnRelease);
-    } else {
-      btnEl.removeEventListener("mouseenter", onBtnHoverIn);
-      btnEl.removeEventListener("mouseleave", onBtnHoverOut);
-      btnEl.removeEventListener("mousedown", onBtnPress);
-      btnEl.removeEventListener("mouseup", onBtnRelease);
-    }
-
-    btnEl.title = online ? "Save to Jellyfin" : offline ? "Backend offline \u2014 start music_app_pyQT" : "Saving to Jellyfin...";
-
-    dotEl.style.cssText = [
-      "position:fixed",
-      "bottom:20px",
-      "right:20px",
-      "z-index:100000",
-      "width:10px",
-      "height:10px",
-      "border-radius:50%",
-      "background:" + (online ? "#4caf50" : offline ? "#ef5350" : "#ffa726"),
-      "border:2px solid rgba(20,20,40,0.95)",
-      "transition:background 0.3s ease",
-    ].join(";");
+  function setStateClass(className) {
+    btnEl.className = "jf-" + className;
   }
 
-  function onBtnHoverIn() {
-    if (!btnEl || !state.backendOnline || state.isSaving) return;
-    btnEl.style.transform = "scale(1.1)";
-    btnEl.style.boxShadow = "0 2px 20px rgba(76,175,80,0.4)";
+  function setDotState(dotClass) {
+    containerEl.className = "jf-" + dotClass + "-dot";
   }
 
-  function onBtnHoverOut() {
-    if (!btnEl) return;
-    btnEl.style.transform = "";
-    btnEl.style.boxShadow = state.backendOnline ? "0 2px 16px rgba(76,175,80,0.3)" : "0 2px 8px rgba(0,0,0,0.3)";
+  function setTooltip(text) {
+    if (!tooltipEl) return;
+    tooltipEl.textContent = text;
   }
 
-  function onBtnPress() {
-    if (!btnEl) return;
-    btnEl.style.transform = "scale(0.92)";
-  }
-
-  function onBtnRelease() {
-    if (!btnEl) return;
-    btnEl.style.transform = "scale(1.08)";
-    setTimeout(() => {
-      if (btnEl) btnEl.style.transform = "";
-    }, 150);
-  }
-
-  // --- Toast ---
-  function showToast(text, isError) {
-    if (!toastEl) return;
-    clearTimeout(state.toastTimer);
-    toastEl.textContent = text;
-    toastEl.style.cssText = [
-      "position:fixed",
-      "bottom:78px",
-      "right:24px",
-      "z-index:99999",
-      "padding:8px 14px",
-      "border-radius:8px",
-      "font-size:12px",
-      "font-weight:500",
-      "font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif",
-      "background:" + (isError ? "rgba(239,83,80,0.15)" : "rgba(76,175,80,0.15)"),
-      "color:" + (isError ? "#ef5350" : "#81c784"),
-      "border:1px solid " + (isError ? "rgba(239,83,80,0.3)" : "rgba(76,175,80,0.3)"),
-      "backdrop-filter:blur(8px)",
-      "box-shadow:0 4px 16px rgba(0,0,0,0.4)",
-      "opacity:1",
-      "transition:opacity 0.3s ease",
-      "max-width:280px",
-      "white-space:nowrap",
-      "overflow:hidden",
-      "text-overflow:ellipsis",
-      "pointer-events:none",
-    ].join(";");
-
-    state.toastTimer = setTimeout(() => {
-      if (toastEl) {
-        toastEl.style.opacity = "0";
-        setTimeout(() => { if (toastEl) toastEl.style.display = "none"; }, 300);
-      }
-    }, TOAST_DURATION);
-  }
-
-  function hideToast() {
-    clearTimeout(state.toastTimer);
-    if (toastEl) {
-      toastEl.style.opacity = "0";
-      toastEl.style.display = "none";
-    }
-  }
-
-  // --- Icon content swap ---
   function setIconOnline() {
     if (!btnEl) return;
     btnEl.innerHTML = "";
@@ -313,6 +424,48 @@
     btnEl.appendChild(xSVG());
   }
 
+  function applyUI() {
+    if (!btnEl) return;
+    const online = state.backendOnline && !state.isSaving;
+    const offline = !state.backendOnline && !state.isSaving;
+
+    if (state.isSaving) {
+      setStateClass("saving");
+      setDotState("busy");
+      setTooltip("Saving to Jellyfin...");
+      btnEl.setAttribute("aria-label", "Saving to Jellyfin...");
+    } else if (online) {
+      setStateClass("online");
+      setDotState("online");
+      setTooltip("Save to Jellyfin");
+      btnEl.setAttribute("aria-label", "Save to Jellyfin");
+    } else if (offline) {
+      setStateClass("offline");
+      setDotState("offline");
+      setTooltip("Backend offline \u2014 start music_app_pyQT");
+      btnEl.setAttribute("aria-label", "Backend offline");
+    }
+  }
+
+  // --- Toast ---
+  function showToast(text, isError) {
+    if (!toastEl) return;
+    clearTimeout(state.toastTimer);
+    toastEl.textContent = text;
+    toastEl.className = isError ? "jf-toast jf-toast-error" : "jf-toast jf-toast-success";
+    toastEl.classList.add("jf-toast-visible");
+    state.toastTimer = setTimeout(() => {
+      toastEl.classList.remove("jf-toast-visible");
+    }, TOAST_DURATION);
+  }
+
+  function hideToast() {
+    clearTimeout(state.toastTimer);
+    if (toastEl) {
+      toastEl.classList.remove("jf-toast-visible");
+    }
+  }
+
   // --- Backend check ---
   async function checkBackend() {
     try {
@@ -335,11 +488,10 @@
     state.pollTimer = null;
   }
 
-  // --- UI update ---
   function updateUI() {
     if (!btnEl) return;
     if (state.isSaving) return;
-    applyButtonStyle();
+    applyUI();
     setIconOnline();
   }
 
@@ -359,13 +511,14 @@
 
     state.isSaving = true;
     setIconSaving();
-    applyButtonStyle();
+    applyUI();
     showToast("Saving to Jellyfin...");
 
     try {
       const result = await browser.runtime.sendMessage({ type: "DOWNLOAD_CURRENT_VIDEO", url });
       if (result && result.ok) {
         setIconSaved();
+        applyUI();
         showToast("Saved to Jellyfin");
         setTimeout(() => {
           if (state.isSaving) {
@@ -375,14 +528,16 @@
         }, 2000);
       } else {
         const msg = result?.error || "Failed";
-        let display = getErrorMessage(msg);
+        const display = getErrorMessage(msg);
         setIconFailed();
+        applyUI();
         showToast(display, true);
         state.isSaving = false;
         setTimeout(checkBackend, 2500);
       }
     } catch (err) {
       setIconFailed();
+      applyUI();
       showToast("Backend offline \u2014 start music_app_pyQT", true);
       state.isSaving = false;
       setTimeout(checkBackend, 2500);
@@ -414,9 +569,7 @@
       if (vid === state.videoId) return;
       state.videoId = vid;
       hideToast();
-      if (state.isSaving) {
-        state.isSaving = false;
-      }
+      if (state.isSaving) state.isSaving = false;
 
       if (!vid) {
         if (containerEl) containerEl.style.display = "none";
@@ -449,7 +602,6 @@
     checkBackend();
     startPolling();
 
-    // SPA detection
     const origPushState = history.pushState;
     const origReplaceState = history.replaceState;
     history.pushState = function () {
