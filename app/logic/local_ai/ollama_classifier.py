@@ -8,7 +8,7 @@ from urllib import error, request
 from app.logic.local_ai.classification_validator import validate_model_classification
 from app.logic.local_ai.classifier_base import LocalMetadataClassifier
 from app.logic.local_ai.fallback_classifier import FallbackClassifier
-from app.logic.local_ai.album_validator import resolve_track_album
+from app.logic.local_ai.album_validator import resolve_track_album_metadata
 from app.logic.local_ai.metadata_normalizer import UNKNOWN_GENRE, calculate_metadata_quality, normalize_album, normalize_genre
 
 _CLASSIFICATION_PROMPT = """You classify music metadata for a local music library.
@@ -104,25 +104,24 @@ Core rules:
     0.00-0.25 when mostly unknown.
 
 Album rules:
-1. If album input is a real album name, keep a cleaned version.
-2. If album is missing/Unknown Album, choose a stable library collection album.
-3. Do not invent official album names.
-4. Do not use song title, artist name, channel name, video id, or full YouTube title as album.
-5. Choose from this allowed fallback list when no album evidence exists:
-   Singles, Music Videos, Live Recordings, Nightcore Collection, Rock Versions,
-   Piano Versions, Piano Covers, Soundtrack Collection, OST Collection,
-   Anime Soundtracks, Classical Piano, Electronic Collection, Pop Collection,
-   Rock Collection, Dance Collection.
-6. Nightcore tracks usually use Nightcore Collection.
-7. Rock Version tracks may use Rock Versions.
-8. Piano Version / piano arrangement tracks may use Piano Versions or Piano Covers.
-9. OST / OP / ED / Soundtrack tracks may use OST Collection, Soundtrack Collection, or Anime Soundtracks.
-10. Official Music Video without other album evidence may use Music Videos or Singles.
-11. Live tracks may use Live Recordings.
-12. Classical piano tracks may use Classical Piano.
+1. `album` must be a real album/release name from the input, or a neutral fallback.
+2. If no real album is known, set album to "Singles".
+3. Live tracks without a real album may use album "Live Recordings".
+4. Do not invent official album names.
+5. Do not use song title, artist name, channel name, video id, or full YouTube title as album.
+6. Do not use category/collection names as album. Put them in `collection` instead.
+7. Allowed `collection` values when supported by input:
+   Music Videos, Nightcore Collection, Rock Versions, Piano Versions, Piano Covers,
+   Soundtrack Collection, OST Collection, Anime Soundtracks, Classical Piano,
+   Electronic Collection, Pop Collection, Rock Collection, Dance Collection, Live Recordings.
+8. Nightcore without a real album: album "Singles", collection "Nightcore Collection".
+9. Official Music Video without a real album: album "Singles", collection "Music Videos".
+10. OST / OP / ED / anime soundtrack without a real album: album "Singles", collection from OST Collection, Soundtrack Collection, or Anime Soundtracks.
+11. Piano Version / piano arrangement without a real album: album "Singles", collection "Piano Versions" or "Piano Covers".
+12. Classical piano without a real album: album "Singles", collection "Classical Piano".
 13. Prefer simple names. Do not be creative.
-14. Same input must always produce the same album.
-15. Same input must always return the same JSON. Choose the simplest stable album collection name.
+14. Same input must always produce the same album and collection.
+15. Same input must always return the same JSON.
 """
 
 
@@ -248,15 +247,20 @@ class OllamaClassifier(LocalMetadataClassifier):
             metadata_quality = calculate_metadata_quality(working)
 
         model_album = parsed.get("album") or parsed.get("album_suggestion")
-        album, album_source, album_confidence = resolve_track_album(
+        album_meta = resolve_track_album_metadata(
             track=track,
             model_album=model_album,
+            model_collection=validated["collection"],
             genre=genre,
             style=validated["style"],
             tags=validated["tags"],
             repair_managed_albums=bool(track.get("_repair_managed_albums")),
         )
-        if album_source == "local_ai":
+        album = album_meta.album
+        album_source = album_meta.album_source
+        album_confidence = album_meta.album_confidence
+        collection = album_meta.collection or validated["collection"]
+        if album_source in {"local_ai", "fallback"}:
             working["album"] = album
             metadata_quality = calculate_metadata_quality(working)
 
@@ -270,7 +274,7 @@ class OllamaClassifier(LocalMetadataClassifier):
             "primary_genre": primary_genre,
             "style": validated["style"],
             "subgenre": validated["subgenre"],
-            "collection": validated["collection"],
+            "collection": collection,
             "mood": validated["mood"],
             "tags": validated["tags"],
             "metadata_quality": metadata_quality,

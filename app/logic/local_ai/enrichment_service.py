@@ -10,7 +10,7 @@ from typing import Any
 from app.config.jellyfin_config import JellyfinConfig
 from app.logic.jellyfin_library import _resolve_duplicate, _safe_path, _set_permissions, sanitize_component
 from app.logic.library_scanner import scan_music_files
-from app.logic.local_ai.album_validator import is_missing_album
+from app.logic.local_ai.album_validator import is_missing_album, is_repairable_source_album_folder
 from app.logic.local_ai.classifier_base import CLASSIFIER_VERSION, LocalMetadataClassifier
 from app.logic.local_ai.classification_validator import is_broad_genre, is_style_label
 from app.logic.local_ai.config import LocalAIConfig, get_config
@@ -22,6 +22,7 @@ from app.logic.local_ai.ollama_classifier import OllamaClassifier
 _cache_lock = threading.Lock()
 _cache_state: dict[str, Any] = {"path": "", "data": {}}
 _MANAGED_TAGS_ID3_DESC = "LOCAL_AI_TAGS"
+_MANAGED_COLLECTION_ID3_DESC = "LOCAL_AI_COLLECTION"
 
 
 def _parse_managed_tags(raw: Any) -> list[str]:
@@ -41,7 +42,7 @@ def _parse_managed_tags(raw: Any) -> list[str]:
 
 def read_audio_file_metadata(path: str) -> dict[str, Any]:
     ext = os.path.splitext(path)[1].lower()
-    out: dict[str, Any] = {"genre": "", "album": "", "managed_tags": []}
+    out: dict[str, Any] = {"genre": "", "album": "", "managed_tags": [], "managed_collection": ""}
     if ext == ".mp3":
         from mutagen.id3 import ID3, ID3NoHeaderError
 
@@ -54,9 +55,12 @@ def read_audio_file_metadata(path: str) -> dict[str, Any]:
         if id3.get("TALB"):
             out["album"] = str(id3["TALB"].text[0]).strip()
         for key in id3.keys():
-            if key.startswith("TXXX:") and key.split(":", 1)[1] == _MANAGED_TAGS_ID3_DESC:
-                out["managed_tags"] = _parse_managed_tags(id3[key].text[0])
-                break
+            if key.startswith("TXXX:"):
+                desc = key.split(":", 1)[1]
+                if desc == _MANAGED_TAGS_ID3_DESC:
+                    out["managed_tags"] = _parse_managed_tags(id3[key].text[0])
+                elif desc == _MANAGED_COLLECTION_ID3_DESC:
+                    out["managed_collection"] = str(id3[key].text[0]).strip()
     elif ext in (".m4a", ".mp4"):
         from mutagen.mp4 import MP4
 
@@ -70,6 +74,10 @@ def read_audio_file_metadata(path: str) -> dict[str, Any]:
             raw = raw_tags[0]
             text = raw.decode("utf-8") if isinstance(raw, bytes) else str(raw)
             out["managed_tags"] = _parse_managed_tags(text)
+        raw_collection = audio.get(f"----:com.apple.iTunes:{_MANAGED_COLLECTION_ID3_DESC}")
+        if raw_collection:
+            raw = raw_collection[0]
+            out["managed_collection"] = raw.decode("utf-8") if isinstance(raw, bytes) else str(raw).strip()
     return out
 
 
@@ -301,6 +309,7 @@ def write_audio_metadata(path: str, metadata: dict[str, Any], *, write_album: bo
     managed_tags = [str(tag).strip() for tag in (metadata.get("tags") or []) if str(tag).strip()]
     managed_tags_payload = json.dumps(managed_tags, ensure_ascii=False)
     album = normalize_album(metadata.get("album")) if write_album else UNKNOWN_ALBUM
+    collection = str(metadata.get("collection") or "").strip()
     if ext == ".mp3":
         from mutagen.id3 import ID3, ID3NoHeaderError, TALB, TCON, TXXX
 
@@ -318,6 +327,9 @@ def write_audio_metadata(path: str, metadata: dict[str, Any], *, write_album: bo
         if write_album and not is_missing_album(album):
             id3.delall("TALB")
             id3.add(TALB(encoding=3, text=album))
+            id3.delall(f"TXXX:{_MANAGED_COLLECTION_ID3_DESC}")
+            if collection:
+                id3.add(TXXX(encoding=3, desc=_MANAGED_COLLECTION_ID3_DESC, text=collection))
         if video_id:
             id3.delall("TXXX:YOUTUBE_VIDEO_ID")
             id3.add(TXXX(encoding=3, desc="YOUTUBE_VIDEO_ID", text=video_id))
@@ -338,6 +350,11 @@ def write_audio_metadata(path: str, metadata: dict[str, Any], *, write_album: bo
                 audio[managed_key] = [managed_tags_payload.encode("utf-8")]
         if write_album and not is_missing_album(album):
             audio["\xa9alb"] = [album]
+            collection_key = f"----:com.apple.iTunes:{_MANAGED_COLLECTION_ID3_DESC}"
+            if collection_key in audio:
+                del audio[collection_key]
+            if collection:
+                audio[collection_key] = [collection.encode("utf-8")]
         if video_id:
             audio["----:com.apple.iTunes:YOUTUBE_VIDEO_ID"] = [video_id.encode("utf-8")]
         audio.save()
@@ -361,7 +378,9 @@ def plan_track_album_move(
         return None
 
     current_album_dir = source.parent
-    if sanitize_component(current_album_dir.name) != sanitize_component("Unknown Album"):
+    if not is_repairable_source_album_folder(current_album_dir.name):
+        return None
+    if sanitize_component(current_album_dir.name) == sanitize_component(target_album):
         return None
 
     filename = source.name
@@ -399,7 +418,7 @@ def move_track_to_album_folder(
     _set_permissions(destination)
 
     old_album_dir = source.parent
-    if old_album_dir.name == "Unknown Album" and old_album_dir.is_dir() and not any(old_album_dir.iterdir()):
+    if is_repairable_source_album_folder(old_album_dir.name) and old_album_dir.is_dir() and not any(old_album_dir.iterdir()):
         try:
             old_album_dir.rmdir()
         except OSError:
