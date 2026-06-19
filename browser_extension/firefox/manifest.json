@@ -5,8 +5,8 @@
   "description": "Save YouTube music directly to your Jellyfin music library",
 
   "icons": {
-    "16": "icons/icon-16.png",
-    "32": "icons/icon-32.png",
+    "16": "icons/toolbar-icon-16.png",
+    "32": "icons/toolbar-icon-32.png",
     "48": "icons/icon-48.png",
     "96": "icons/icon-96.png",
     "128": "icons/icon-128.png"
@@ -47,10 +47,9 @@
     "default_title": "Music Library Saver",
     "default_popup": "popup/popup.html",
     "default_icon": {
-      "16": "icons/icon-16.png",
-      "32": "icons/icon-32.png",
-      "48": "icons/icon-48.png",
-      "96": "icons/icon-96.png"
+      "16": "icons/toolbar-icon-16.png",
+      "32": "icons/toolbar-icon-32.png",
+      "48": "icons/toolbar-icon-48.png"
     }
   },
 
