@@ -82,6 +82,55 @@ class TestDownloadLibraryEndpoint:
         assert data["ok"] is True
 
 
+class TestDownloadLibraryErrorHandling:
+    def test_ytdlp_forbidden_returns_json_error(self, monkeypatch):
+        """When yt-dlp gets 403, endpoint returns JSON with YTDLP_FORBIDDEN error code, not 500."""
+        import app.endpoints.library_api as lib_api
+
+        def _mock_forbidden(videoId, id="0", format_ext="mp3", base_path=None):
+            from fastapi import HTTPException
+            raise HTTPException(status_code=502, detail="YouTube blocked the download request")
+
+        monkeypatch.setattr(lib_api, "download_song", _mock_forbidden)
+        resp = client.post("/api/download-library", json={"url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ"})
+        assert resp.status_code == 502
+        data = resp.json()
+        assert "detail" in data
+
+    def test_no_output_file_returns_json_error(self, monkeypatch):
+        """When download produces no file, endpoint returns JSON with proper error."""
+        import app.endpoints.library_api as lib_api
+
+        def _mock_no_output(videoId, id="0", format_ext="mp3", base_path=None):
+            from fastapi import HTTPException
+            raise HTTPException(status_code=422, detail="Download finished without an audio file")
+
+        monkeypatch.setattr(lib_api, "download_song", _mock_no_output)
+        resp = client.post("/api/download-library", json={"url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ"})
+        assert resp.status_code == 422
+        data = resp.json()
+        assert "detail" in data
+
+    def test_unexpected_error_returns_500_json(self, monkeypatch):
+        """Unexpected errors still return 500 but as JSON, not crash."""
+        import app.endpoints.library_api as lib_api
+
+        def _mock_crash(videoId, id="0", format_ext="mp3", base_path=None):
+            raise RuntimeError("Something completely unexpected")
+
+        monkeypatch.setattr(lib_api, "download_song", _mock_crash)
+        resp = client.post("/api/download-library", json={"url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ"})
+        assert resp.status_code == 500
+        data = resp.json()
+        assert data["ok"] is False
+        assert data.get("error_code") == "INTERNAL_ERROR" or "error" in data
+
+    def test_response_is_always_json_not_file(self):
+        """The endpoint must return JSON even on errors, never a FileResponse."""
+        resp = client.post("/api/download-library", json={"url": "invalid"})
+        assert resp.headers.get("content-type", "").startswith("application/json")
+
+
 class TestLibrarySongsEndpoint:
     def test_library_songs_returns_json(self, monkeypatch, tmp_path):
         monkeypatch.setenv(LIBRARY_PATH_VAR, str(tmp_path / "music"))

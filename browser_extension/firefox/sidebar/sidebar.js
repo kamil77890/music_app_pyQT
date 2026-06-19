@@ -3,14 +3,57 @@
 
   const $ = (id) => document.getElementById(id);
   const statusBadge = $("status-badge");
+  const tabStatusBadge = $("tab-status-badge");
+  const tabTitle = $("tab-title");
+  const tabUrl = $("tab-url");
+  const btnSaveTab = $("btn-save-tab");
+  const downloadStatus = $("download-status");
+  const statusIcon = $("status-icon");
+  const statusText = $("status-text");
   const libraryStatus = $("library-status");
   const songList = $("song-list");
   const audioPlayer = $("audio-player");
   const playerSection = $("player-section");
+  const playerTitle = $("player-title");
 
   let allSongs = [];
+  let tabInfo = null;
+  let pollingTimer = null;
 
-  // -- backend status --
+  // --- Status helpers ---
+  function setStatus(state, text) {
+    downloadStatus.className = "status-" + state;
+    statusText.textContent = text;
+    if (state === "idle") {
+      statusIcon.textContent = "\u23F3";
+    } else if (state === "saving") {
+      statusIcon.textContent = "\u23F3";
+    } else if (state === "saved") {
+      statusIcon.textContent = "\u2713";
+    } else if (state === "failed") {
+      statusIcon.textContent = "\u2717";
+    }
+  }
+
+  function getErrorMessage(err) {
+    if (!err) return "Unknown error";
+    const msg = typeof err === "string" ? err : (err.message || err.error || String(err));
+    if (msg.includes("Backend offline") || msg.includes("Failed to fetch") || msg.includes("NetworkError")) {
+      return "Backend offline. Start music_app_pyQT on localhost:8000.";
+    }
+    if (msg.includes("YTDLP_FORBIDDEN") || msg.includes("403")) {
+      return "YouTube blocked the download request. Try updating yt-dlp or enable cookies-from-browser in backend settings.";
+    }
+    if (msg.includes("NO_OUTPUT_FILE")) {
+      return "Download finished without an audio file. Try another video or update yt-dlp.";
+    }
+    if (msg.includes("INVALID_URL") || msg.includes("invalid")) {
+      return "This is not a valid YouTube URL.";
+    }
+    return msg;
+  }
+
+  // --- Backend status ---
   async function checkStatus() {
     try {
       const resp = await browser.runtime.sendMessage({ type: "GET_BACKEND_STATUS" });
@@ -26,18 +69,55 @@
     }
   }
 
-  // -- library --
+  // --- Tab info ---
+  function updateTabUI(info) {
+    tabInfo = info;
+    if (!info || !info.url) {
+      tabTitle.textContent = "No active tab detected";
+      tabTitle.className = "tab-title text-muted";
+      tabUrl.textContent = "";
+      tabStatusBadge.textContent = "No tab";
+      tabStatusBadge.className = "tab-status-badge tab-unknown";
+      btnSaveTab.disabled = true;
+      return;
+    }
+
+    tabTitle.textContent = info.title || "(untitled)";
+    tabTitle.className = "tab-title";
+    tabUrl.textContent = info.url;
+
+    if (info.isYouTube) {
+      tabStatusBadge.textContent = "YouTube detected";
+      tabStatusBadge.className = "tab-status-badge tab-youtube";
+      btnSaveTab.disabled = false;
+    } else {
+      tabStatusBadge.textContent = "Not a YouTube page";
+      tabStatusBadge.className = "tab-status-badge tab-not-youtube";
+      btnSaveTab.disabled = true;
+    }
+  }
+
+  async function fetchTabInfo() {
+    try {
+      const resp = await browser.runtime.sendMessage({ type: "GET_CURRENT_TAB_INFO" });
+      if (resp.ok) {
+        updateTabUI(resp.tab);
+      }
+    } catch {}
+  }
+
+  // --- Library ---
   async function loadLibrary(q) {
-    libraryStatus.textContent = "Loading...";
     songList.innerHTML = "";
+    $("empty-state").style.display = "none";
     try {
       const resp = await browser.runtime.sendMessage({ type: "GET_LIBRARY", q: q || "" });
       if (!resp.ok) throw new Error(resp.error);
       allSongs = resp.data.songs || [];
       renderSongs(allSongs);
-      libraryStatus.textContent = allSongs.length
-        ? `${allSongs.length} song${allSongs.length !== 1 ? "s" : ""}`
-        : "Library is empty. Download some music!";
+      if (allSongs.length === 0) {
+        $("empty-state").style.display = "flex";
+      }
     } catch (err) {
       libraryStatus.textContent = "Error: " + err.message;
     }
@@ -53,18 +133,19 @@
       cover.className = "song-cover";
       cover.src = song.cover || song.thumbnail || "";
       cover.alt = "";
-      cover.onerror = () => { cover.src = ""; cover.style.background = "var(--surface2)"; };
+      cover.onerror = () => { cover.src = ""; cover.style.background = "var(--surface-hover)"; };
 
       const info = document.createElement("div");
       info.className = "song-info";
       info.innerHTML = `
         <div class="song-title">${esc(song.title || "Unknown")}</div>
-        <div class="song-artist">${esc(song.artist || "Unknown Artist")} · ${esc(song.album || "")}</div>
+        <div class="song-artist">${esc(song.artist || "Unknown Artist")}</div>
+        <div class="song-album">${esc(song.album || "")}</div>
       `;
 
       const playBtn = document.createElement("button");
       playBtn.className = "song-play";
-      playBtn.textContent = "▶";
+      playBtn.textContent = "\u25B6";
       playBtn.title = "Play";
       playBtn.addEventListener("click", (e) => {
         e.stopPropagation();
@@ -81,6 +162,7 @@
   function playSong(song) {
     const streamUrl = getStreamUrl(song);
     if (!streamUrl) return;
+    playerTitle.textContent = song.title || "Unknown";
     audioPlayer.src = streamUrl;
     playerSection.classList.add("active");
     audioPlayer.play().catch(() => {});
@@ -89,40 +171,66 @@
   function esc(s) {
     if (!s) return "";
     const d = document.createElement("div");
-    d.textContent = s;
+    d.textContent = String(s);
     return d.innerHTML;
   }
 
-  // -- save current tab --
+  // --- Save current tab ---
   async function saveCurrentTab() {
+    if (!tabInfo || !tabInfo.isYouTube || !tabInfo.url) {
+      setStatus("failed", "No YouTube tab active");
+      return;
+    }
+    await doSave(tabInfo.url);
+  }
+
+  async function doSave(url) {
+    setStatus("saving", "Saving...");
+    btnSaveTab.disabled = true;
+    btnSaveTab.classList.add("saving");
     try {
-      const tabResp = await browser.runtime.sendMessage({ type: "GET_CURRENT_TAB_URL" });
-      if (!tabResp.ok || !tabResp.url) {
-        libraryStatus.textContent = "No YouTube tab active";
-        return;
-      }
-      const url = tabResp.url;
-      if (!url.includes("youtube.com") && !url.includes("youtu.be")) {
-        libraryStatus.textContent = "Active tab is not YouTube";
-        return;
-      }
-      libraryStatus.textContent = "Saving...";
       const result = await browser.runtime.sendMessage({ type: "DOWNLOAD_URL", url });
       if (result && result.ok) {
-        libraryStatus.textContent = `Saved: ${result.title || ""}`;
+        const title = result.title || "";
+        setStatus("saved", title ? `Saved: ${title}` : "Saved to Jellyfin");
         loadLibrary($("input-search").value);
       } else {
-        libraryStatus.textContent = "Failed: " + (result?.error || "unknown error");
+        const errMsg = getErrorMessage(result?.error || "unknown error");
+        setStatus("failed", errMsg);
       }
     } catch (err) {
-      libraryStatus.textContent = "Error: " + err.message;
+      setStatus("failed", getErrorMessage(err));
+    } finally {
+      btnSaveTab.disabled = false;
+      btnSaveTab.classList.remove("saving");
+      if (!tabInfo || !tabInfo.isYouTube) btnSaveTab.disabled = true;
     }
   }
 
-  // -- events --
+  // --- Events ---
+  function init() {
+    checkStatus();
+    fetchTabInfo();
+    loadLibrary();
+
+    // Listen for live tab updates from background
+    browser.runtime.onMessage.addListener((msg) => {
+      if (msg.type === "CURRENT_TAB_CHANGED") {
+        updateTabUI(msg.tab);
+      }
+    });
+
+    // Fallback polling every 2s if background events don't fire
+    pollingTimer = setInterval(() => {
+      fetchTabInfo();
+    }, 2000);
+  }
+
   $("btn-refresh").addEventListener("click", () => {
     checkStatus();
     loadLibrary($("input-search").value);
+    fetchTabInfo();
+    setStatus("idle", "Idle");
   });
 
   $("btn-save-tab").addEventListener("click", saveCurrentTab);
@@ -130,18 +238,13 @@
   $("btn-save-url").addEventListener("click", async () => {
     const url = $("input-url").value.trim();
     if (!url) return;
-    $("library-status").textContent = "Saving...";
-    try {
-      const result = await browser.runtime.sendMessage({ type: "DOWNLOAD_URL", url });
-      if (result && result.ok) {
-        $("library-status").textContent = `Saved: ${result.title || ""}`;
-        $("input-url").value = "";
-        loadLibrary($("input-search").value);
-      } else {
-        $("library-status").textContent = "Failed: " + (result?.error || "unknown error");
-      }
-    } catch (err) {
-      $("library-status").textContent = "Error: " + err.message;
+    $("input-url").value = "";
+    await doSave(url);
+  });
+
+  $("input-url").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      $("btn-save-url").click();
     }
   });
 
@@ -151,7 +254,11 @@
     searchTimer = setTimeout(() => loadLibrary($("input-search").value), 300);
   });
 
-  // -- init --
-  checkStatus();
-  loadLibrary();
+  $("btn-player-close").addEventListener("click", () => {
+    audioPlayer.pause();
+    audioPlayer.src = "";
+    playerSection.classList.remove("active");
+  });
+
+  init();
 })();

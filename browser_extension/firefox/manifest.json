@@ -49,7 +49,7 @@
 
   "browser_specific_settings": {
     "gecko": {
-      "id": "{music-library-saver@localhost}",
+      "id": "music-library-saver@localhost",
       "strict_min_version": "68.0"
     }
   }

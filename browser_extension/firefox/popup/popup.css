@@ -1,46 +1,163 @@
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
 :root {
-  --bg: #1a1a2e;
-  --surface: #16213e;
-  --accent: #1e88e5;
-  --text: #e0e0e0;
-  --text-muted: #888;
+  --bg-gradient: linear-gradient(135deg, #0f0c29 0%, #1a1a3e 100%);
+  --surface: rgba(255, 255, 255, 0.06);
+  --surface-hover: rgba(255, 255, 255, 0.10);
+  --border: rgba(255, 255, 255, 0.10);
+  --accent: #7c4dff;
+  --accent-hover: #651fff;
+  --text: #e8e8f0;
+  --text-muted: #9898b0;
+  --text-dim: #6868a0;
   --success: #4caf50;
+  --success-bg: rgba(76, 175, 80, 0.12);
   --error: #ef5350;
-  --radius: 6px;
+  --error-bg: rgba(239, 83, 80, 0.12);
+  --radius: 10px;
+  --radius-sm: 6px;
 }
+
 body {
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, sans-serif;
   font-size: 13px;
-  background: var(--bg);
+  background: var(--bg-gradient);
   color: var(--text);
-  width: 280px;
-  padding: 12px;
+  width: 300px;
+  padding: 16px;
+  min-height: 180px;
 }
-#popup { display: flex; flex-direction: column; gap: 10px; }
-h1 { font-size: 15px; font-weight: 600; text-align: center; }
 
-#status-row { text-align: center; }
-#backend-status { font-size: 11px; padding: 2px 10px; border-radius: 10px; }
-.offline { background: #5a1a1a; color: var(--error); }
-.online  { background: #1a4a1a; color: var(--success); }
+#popup {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
 
-.actions { display: flex; flex-direction: column; gap: 6px; }
-button {
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+h1 {
+  font-size: 15px;
+  font-weight: 700;
+  background: linear-gradient(135deg, #e8e8f0, #7c4dff);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+#backend-status {
+  font-size: 9px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.offline {
+  background: var(--error-bg);
+  color: var(--error);
+}
+
+.online {
+  background: var(--success-bg);
+  color: var(--success);
+}
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.url-display {
+  font-size: 11px;
+  word-break: break-all;
+  line-height: 1.3;
+}
+
+.muted {
+  color: var(--text-dim);
+}
+
+.tab-status {
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.tab-status.youtube {
+  color: var(--success);
+}
+
+.tab-status.not-youtube {
+  color: #ffa726;
+}
+
+.actions {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.primary-btn, .secondary-btn {
+  padding: 10px 14px;
+  border: none;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s;
+  text-align: center;
+}
+
+.primary-btn {
+  background: linear-gradient(135deg, var(--accent), #9155ff);
+  color: #fff;
+}
+
+.primary-btn:hover:not(:disabled) {
+  background: linear-gradient(135deg, var(--accent-hover), #7c4dff);
+}
+
+.primary-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.secondary-btn {
   background: var(--surface);
   color: var(--text);
-  border: 1px solid #2a3a5a;
-  border-radius: var(--radius);
-  padding: 8px 14px;
-  font-size: 12px;
-  cursor: pointer;
-  font-weight: 500;
+  border: 1px solid var(--border);
 }
-button:hover { background: #1f2f50; }
-#btn-save-tab { background: var(--accent); border-color: var(--accent); color: #fff; }
-#btn-save-tab:hover { background: #1565c0; }
 
-.info { font-size: 11px; color: var(--text-muted); text-align: center; word-break: break-all; }
-.footer { text-align: center; }
-.footer a { color: var(--accent); font-size: 11px; text-decoration: none; }
-.footer a:hover { text-decoration: underline; }
+.secondary-btn:hover {
+  background: var(--surface-hover);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.footer {
+  text-align: center;
+  padding-top: 4px;
+}
+
+.footer a {
+  color: var(--text-dim);
+  font-size: 10px;
+  text-decoration: none;
+  transition: color 0.15s;
+}
+
+.footer a:hover {
+  color: var(--accent);
+  text-decoration: underline;
+}

@@ -184,6 +184,14 @@ def process_subtitles(file_path: str, video_id: str, basename: str) -> None:
         log.warning("Failed to process subtitles: %s", e)
 
 
+class DownloadError(Exception):
+    def __init__(self, message, error_code="UNKNOWN", status_code=500):
+        self.message = message
+        self.error_code = error_code
+        self.status_code = status_code
+        super().__init__(message)
+
+
 def download_song(videoId: str, id: str = "0", format_ext: str = "mp3", base_path: str = None) -> dict:
     """Download a song and save it to the Jellyfin library.
 
@@ -210,7 +218,7 @@ def download_song(videoId: str, id: str = "0", format_ext: str = "mp3", base_pat
             youtube_url, temp, audio_format=format_ext, quality="320"
         )
         if not results:
-            raise Exception("Download produced no file")
+            raise DownloadError("Download finished without an audio file. Try another video or update yt-dlp.", error_code="NO_OUTPUT_FILE", status_code=422)
 
         track = results[0]
         downloaded_path = track["filepath"]
@@ -228,7 +236,7 @@ def download_song(videoId: str, id: str = "0", format_ext: str = "mp3", base_pat
                 temp_path = downloaded_path
 
         if not os.path.exists(temp_path):
-            raise Exception(f"Download failed: {temp_path} not created")
+            raise DownloadError("Download failed: file not created", error_code="NO_OUTPUT_FILE", status_code=422)
 
         process_metadata(temp_path, format_ext, clean_video_id, meta=track)
         process_subtitles(temp_path, clean_video_id, final_name)
@@ -268,8 +276,20 @@ def download_song(videoId: str, id: str = "0", format_ext: str = "mp3", base_pat
 
     except HTTPException:
         raise
+    except DownloadError as de:
+        raise HTTPException(
+            status_code=de.status_code,
+            detail=de.message,
+            headers={"X-Error-Code": de.error_code},
+        )
     except Exception as e:
         log.error("Error in download_song: %s", e)
+        if "403" in str(e) or "Forbidden" in str(e):
+            raise HTTPException(
+                status_code=502,
+                detail="YouTube blocked the download request. Try updating yt-dlp or using browser cookies.",
+                headers={"X-Error-Code": "YTDLP_FORBIDDEN"},
+            )
         raise HTTPException(status_code=500, detail=str(e))
 
 

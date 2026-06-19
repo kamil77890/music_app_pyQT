@@ -7,23 +7,23 @@
 </head>
 <body>
   <div id="popup">
-    <h1>Music Library Saver</h1>
+    <div class="header">
+      <h1>Music Library Saver</h1>
+      <span id="backend-status" class="offline">offline</span>
+    </div>
 
-    <div id="status-row">
-      <span id="backend-status" class="offline">backend offline</span>
+    <div id="tab-card" class="card">
+      <div id="current-url-display" class="url-display muted">No tab detected</div>
+      <div id="tab-status-line" class="tab-status"></div>
     </div>
 
     <div class="actions">
-      <button id="btn-open-sidebar">Open Sidebar</button>
-      <button id="btn-save-tab">Save current YouTube</button>
-    </div>
-
-    <div class="info">
-      <span id="current-url-display"></span>
+      <button id="btn-save-tab" class="primary-btn" disabled>Save current YouTube</button>
+      <button id="btn-open-sidebar" class="secondary-btn">Open Sidebar</button>
     </div>
 
     <div class="footer">
-      <a href="http://localhost:8000/api/health" target="_blank">localhost:8000</a>
+      <a href="http://localhost:8000/api/health" target="_blank">Backend &rarr; localhost:8000</a>
     </div>
   </div>
   <script src="../shared/api.js"></script>

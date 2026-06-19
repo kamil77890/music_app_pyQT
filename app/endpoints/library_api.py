@@ -41,7 +41,10 @@ async def download_to_library(body: dict = Body(...)):
             ext = os.path.splitext(jellyfin_path)[1].lstrip(".").lower()
             if ext in ("mp3", "mp4", "m4a"):
                 from app.logic.metadata.add_metadata import verify_metadata
-                meta = verify_metadata(jellyfin_path, ext)
+                try:
+                    meta = verify_metadata(jellyfin_path, ext)
+                except Exception as meta_err:
+                    log.warning("verify_metadata failed for %s: %s", jellyfin_path, meta_err)
         return {
             "ok": True,
             "status": "saved",
@@ -55,7 +58,7 @@ async def download_to_library(body: dict = Body(...)):
         raise
     except Exception as exc:
         log.warning("download-library failed for %s: %s", video_id, exc)
-        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+        return JSONResponse({"ok": False, "status": "failed", "error_code": "INTERNAL_ERROR", "message": str(exc)}, status_code=500)
 
 
 @router.get("/library/songs")

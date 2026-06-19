@@ -168,6 +168,33 @@ def _build_opts(
     if cookie_file:
         opts["cookiefile"] = cookie_file
 
+    # Optional env-var overrides for yt-dlp (YouTube blocking workarounds)
+    cookies_from_browser = os.environ.get("YTDLP_COOKIES_FROM_BROWSER", "")
+    if cookies_from_browser:
+        opts["cookiesfrombrowser"] = (cookies_from_browser,)
+
+    user_agent = os.environ.get("YTDLP_USER_AGENT", "")
+    if user_agent:
+        opts["http_headers"]["User-Agent"] = user_agent
+
+    force_ipv4 = os.environ.get("YTDLP_FORCE_IPV4", "false")
+    if force_ipv4.lower() == "true":
+        opts["force_ipv4"] = True
+
+    extractor_args_raw = os.environ.get("YTDLP_EXTRACTOR_ARGS", "")
+    if extractor_args_raw:
+        pairs = [p.strip() for p in extractor_args_raw.split(",") if p.strip()]
+        extractor_args: dict[str, list[str]] = {}
+        for pair in pairs:
+            if "=" in pair:
+                key, value = pair.split("=", 1)
+                key = key.strip()
+                value = value.strip()
+                if key:
+                    extractor_args.setdefault(key, []).append(value)
+        if extractor_args:
+            opts["extractor_args"] = extractor_args
+
     return opts
 
 

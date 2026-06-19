@@ -7,32 +7,72 @@
 </head>
 <body>
   <div id="app">
+
+    <!-- Header -->
     <header>
-      <h1>Music Library</h1>
-      <span id="status-badge" class="badge-offline">offline</span>
-      <button id="btn-refresh" title="Refresh library">&#x21bb;</button>
+      <div class="header-left">
+        <h1>Music Library</h1>
+        <span id="status-badge" class="badge-offline">offline</span>
+      </div>
+      <button id="btn-refresh" class="icon-btn" title="Refresh">&#x21bb;</button>
     </header>
 
-    <section id="actions">
-      <button id="btn-save-tab" class="primary-btn">Save current YouTube tab</button>
+    <!-- Current Tab -->
+    <section id="current-tab-section" class="card">
+      <div class="card-header">
+        <span class="card-label">Current Tab</span>
+        <span id="tab-status-badge" class="tab-status-badge tab-unknown">Unknown</span>
+      </div>
+      <div id="tab-info">
+        <div id="tab-title" class="tab-title text-muted">No active tab detected</div>
+        <div id="tab-url" class="tab-url text-muted"></div>
+      </div>
+      <button id="btn-save-tab" class="primary-btn" disabled>Save current tab</button>
+    </section>
+
+    <!-- Manual URL -->
+    <section class="card">
+      <div class="card-header">
+        <span class="card-label">Manual URL</span>
+      </div>
       <div class="url-row">
-        <input type="text" id="input-url" placeholder="YouTube URL ..." />
-        <button id="btn-save-url">Save</button>
+        <input type="text" id="input-url" placeholder="Paste YouTube URL..." />
+        <button id="btn-save-url" class="secondary-btn">Save</button>
       </div>
     </section>
 
+    <!-- Download Status -->
+    <section id="status-section">
+      <div id="download-status" class="status-idle">
+        <span id="status-icon">&#x23F3;</span>
+        <span id="status-text">Idle</span>
+      </div>
+    </section>
+
+    <!-- Search -->
     <section id="search-section">
       <input type="search" id="input-search" placeholder="Search library..." />
     </section>
 
+    <!-- Library -->
     <section id="library-section">
-      <p id="library-status">Loading...</p>
       <ul id="song-list"></ul>
+      <div id="empty-state">
+        <div class="empty-icon">&#x266B;</div>
+        <div class="empty-title">No music yet</div>
+        <div class="empty-subtitle">Open YouTube and click Save to Jellyfin</div>
+      </div>
     </section>
 
-    <section id="player-section">
-      <audio id="audio-player" controls></audio>
-    </section>
+  </div>
+
+  <!-- Mini Player (sticky bottom) -->
+  <div id="player-section">
+    <div id="player-info">
+      <span id="player-title" class="player-title">No track playing</span>
+      <button id="btn-player-close" class="icon-btn-sm" title="Close">&times;</button>
+    </div>
+    <audio id="audio-player" controls></audio>
   </div>
 
   <script src="../shared/api.js"></script>
