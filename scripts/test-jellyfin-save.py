@@ -57,7 +57,7 @@ def test_save(mode_name: str, copy_flag: bool) -> str | None:
     print(f"    temp exists: {os.path.isfile(tmp_path)}")
 
     try:
-        jellyfin_path = saveTrackToLibrary(
+        return_path = saveTrackToLibrary(
             tmp_path,
             {
                 "title": "Test Song",
@@ -71,10 +71,10 @@ def test_save(mode_name: str, copy_flag: bool) -> str | None:
             },
             copy=copy_flag,
         )
-        print(f"    Jellyfin path: {jellyfin_path}")
-        print(f"    exists: {os.path.isfile(jellyfin_path)}")
-        print(f"    size: {os.path.getsize(jellyfin_path)} bytes")
-        print(f"    perms: {oct(os.stat(jellyfin_path).st_mode & 0o777)}")
+        print(f"    Jellyfin path: {return_path}")
+        print(f"    exists: {os.path.isfile(return_path)}")
+        print(f"    size: {os.path.getsize(return_path)} bytes")
+        print(f"    perms: {oct(os.stat(return_path).st_mode & 0o777)}")
 
         source_still_exists = os.path.isfile(tmp_path)
         print(f"    source after save: {'EXISTS' if source_still_exists else 'REMOVED'}")
@@ -83,7 +83,7 @@ def test_save(mode_name: str, copy_flag: bool) -> str | None:
         keep_legacy = JellyfinConfig.get_keep_legacy_copy()
         print(f"    MUSIC_KEEP_LEGACY_COPY: {keep_legacy}")
 
-        return jellyfin_path
+        return return_path
     except Exception as exc:
         print(f"    FAILED: {exc}", file=sys.stderr)
         return None
@@ -98,23 +98,32 @@ def main():
     print(f"LIBRARY: {JellyfinConfig.get_music_library_path()}")
     print(f"LEGACY: {JellyfinConfig.get_keep_legacy_copy()}")
     print(f"TEMP:   {JellyfinConfig.get_temp_dir()}")
-    print(f"SCAN:   {JellyfinConfig.get_jellyfin_auto_scan()}")
-    print(f"API:    {'set' if JellyfinConfig.get_jellyfin_api_key() else 'NOT SET (scan skipped)'}")
+    print(f"AUTO:   {JellyfinConfig.get_jellyfin_auto_scan()}")
+    api_set = "yes" if JellyfinConfig.get_jellyfin_api_key() else "no"
+    print(f"API:    {api_set}")
+    if not JellyfinConfig.get_jellyfin_api_key():
+        print("        → scan will be skipped (no key)")
+    elif not JellyfinConfig.get_jellyfin_auto_scan():
+        print("        → scan will be skipped (AUTO_SCAN=false)")
+    else:
+        print("        → scan will be triggered on save")
     print("=" * 60)
 
-    paths = []
+    paths: list[str | None] = []
     for mode, copy_flag in [("Copy (legacy)", True), ("Move (no legacy)", False)]:
         result = test_save(mode, copy_flag)
-        if result:
-            paths.append(result)
+        paths.append(result)
 
-    # clean up
+    failed = [p for p in paths if p is None]
+
+    # clean up only successful paths
     for p in paths:
-        _cleanup_test_artifacts(p)
+        if p:
+            _cleanup_test_artifacts(p)
 
     print(f"\n{'=' * 60}")
-    if any(p is None for p in paths):
-        print("RESULT: SOME TESTS FAILED")
+    if failed:
+        print(f"RESULT: {len(failed)} TEST(S) FAILED")
         return 1
     print("RESULT: ALL TESTS PASSED")
     print(f"{'=' * 60}")

@@ -349,3 +349,63 @@ class TestJellyfinScan:
         song.write_text("fake")
         result = saveTrackToLibrary(str(song), {"title": "Test", "artist": "Test Artist"})
         assert os.path.exists(result)
+
+    def test_auto_scan_false_skips_scan_even_with_key(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("MUSIC_LIBRARY_PATH", str(tmp_path / "music"))
+        monkeypatch.setenv("JELLYFIN_API_KEY", "some-key")
+        monkeypatch.setenv("JELLYFIN_AUTO_SCAN", "false")
+
+        call_count = 0
+
+        def _fake_post(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+
+        monkeypatch.setattr("requests.post", _fake_post)
+
+        song = tmp_path / "song.mp3"
+        song.write_text("fake")
+        result = saveTrackToLibrary(str(song), {"title": "Test", "artist": "Test Artist"})
+        assert os.path.exists(result)
+        assert call_count == 0, "requests.post was called even though AUTO_SCAN=false"
+
+    def test_scan_request_made_when_api_key_set(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("MUSIC_LIBRARY_PATH", str(tmp_path / "music"))
+        monkeypatch.setenv("JELLYFIN_API_KEY", "test-key-123")
+        monkeypatch.setenv("JELLYFIN_AUTO_SCAN", "true")
+        monkeypatch.setenv("JELLYFIN_URL", "http://localhost:9999")
+
+        call_data = {}
+
+        def _fake_post(url, headers=None, timeout=30, **kwargs):
+            call_data["url"] = url
+            call_data["token"] = (headers or {}).get("X-Emby-Token")
+            from unittest.mock import MagicMock
+            resp = MagicMock()
+            resp.status_code = 204
+            return resp
+
+        monkeypatch.setattr("requests.post", _fake_post)
+
+        song = tmp_path / "song.mp3"
+        song.write_text("fake")
+        result = saveTrackToLibrary(str(song), {"title": "Test", "artist": "Test Artist"})
+        assert os.path.exists(result)
+        assert call_data.get("url") == "http://localhost:9999/Library/Refresh"
+        assert call_data.get("token") == "test-key-123", "API key not sent as X-Emby-Token"
+
+    def test_scan_request_error_does_not_crash_save(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("MUSIC_LIBRARY_PATH", str(tmp_path / "music"))
+        monkeypatch.setenv("JELLYFIN_API_KEY", "test-key-123")
+        monkeypatch.setenv("JELLYFIN_AUTO_SCAN", "true")
+
+        import requests
+        def _failing_post(*args, **kwargs):
+            raise requests.exceptions.ConnectionError("Jellyfin not reachable")
+
+        monkeypatch.setattr("requests.post", _failing_post)
+
+        song = tmp_path / "song.mp3"
+        song.write_text("fake")
+        result = saveTrackToLibrary(str(song), {"title": "Test", "artist": "Test Artist"})
+        assert os.path.exists(result), "File must be saved even when Jellyfin scan fails"
