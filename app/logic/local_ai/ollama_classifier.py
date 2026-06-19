@@ -10,9 +10,9 @@ from app.logic.local_ai.classifier_base import LocalMetadataClassifier
 from app.logic.local_ai.fallback_classifier import FallbackClassifier
 from app.logic.local_ai.metadata_normalizer import UNKNOWN_GENRE, calculate_metadata_quality, normalize_genre
 
-_CLASSIFICATION_PROMPT = """You classify music metadata.
+_CLASSIFICATION_PROMPT = """You classify music metadata for a local music library.
 
-Input:
+Input metadata:
 title: {title}
 artist: {artist}
 album: {album}
@@ -20,7 +20,9 @@ existing_genre: {existing_genre}
 source_title: {source_title}
 description: {description}
 
-Return strict JSON only. No markdown.
+Return strict JSON only. No markdown, no explanation outside JSON.
+
+Required JSON shape:
 {{
   "genre": string,
   "primary_genre": string,
@@ -34,34 +36,70 @@ Return strict JSON only. No markdown.
   "reason": string
 }}
 
-Rules:
-1. genre and primary_genre must be broad music genres only.
-   Valid examples: Rock, Pop, Electronic, Soundtrack, Classical, Hip Hop, Metal, Jazz, Folk, Ambient, Dance, Unknown Genre.
+Core rules:
+1. `genre` and `primary_genre` must be broad music genres only.
+   Prefer one of:
+   Rock, Pop, Electronic, Dance, Soundtrack, Classical, Hip Hop, Metal, Jazz, Folk, Ambient, Orchestral, Unknown Genre.
 
-2. Do not use franchise/media/context labels as genre:
-   Anime, Cyberpunk, Game, Movie, YouTube, TikTok, OP, ED, Lyrics.
-   Put these into collection or tags instead.
+2. If unsure about the broad music genre, use "Unknown Genre".
+   Do not force a genre just to fill the field.
 
-3. Do not use performance/style labels as primary genre unless they are commonly used as genre.
-   Piano, Cover, Remix, Nightcore, Instrumental should usually go to style and/or tags.
+3. Do not use context/media/franchise/platform labels as genre:
+   Anime, Cyberpunk, Game, Movie, TV, YouTube, TikTok, OP, ED, Opening, Ending, Lyrics, Lyric Video.
+   These may be tags or collection only when clearly supported by the input.
 
-4. OST/opening/ending/anime/movie/game music should usually use:
+4. Do not use performance/style labels as genre:
+   Piano, Nightcore, Cover, Remix, Instrumental, Acoustic, Orchestral Version.
+   Put these in `style` and/or tags.
+
+5. OST/opening/ending/media soundtrack tracks should usually use:
    primary_genre: Soundtrack
-   collection/tags: Anime, Game, Movie, OST, Opening, Ending, etc.
+   genre: Soundtrack
+   style: Piano/Orchestral/etc. only if clearly present.
+   Do not infer Game/Movie/Anime unless explicitly supported by the input.
 
-5. If the title says Piano Version or piano arrangement:
-   style should include Piano.
+6. Nightcore:
+   If title/source says Nightcore, set style to "Nightcore".
+   If no clearer genre exists, prefer Electronic or Dance over Unknown Genre.
+   Do not set genre to Nightcore.
+
+7. Piano:
+   If title/source says Piano Version, piano arrangement, piano cover, or similar, set style to "Piano".
    Do not set genre to Piano.
 
-6. If the title says Nightcore:
-   style should include Nightcore.
-   Choose primary_genre by musical context if clear, otherwise Electronic or Unknown Genre.
+8. Rock Version:
+   If title/source explicitly says Rock Version, use Rock as broad genre.
+   Put Rock in tags. Do not use "Rock Version" as a tag.
 
-7. Do not use YouTube IDs, hashes, URLs, filenames, or random IDs as genre.
-8. If unsure, use "Unknown Genre".
-9. Do not invent album names.
-10. Keep tags short and useful.
-11. Keep reason short, factual, and based only on the provided metadata.
+9. Lyrics:
+   If title/source says Lyrics or Lyric Video, add tag "Lyrics".
+   Do not use Lyrics as genre, style, subgenre, or collection.
+
+10. Tags must be short useful music/library labels.
+    Good tags: Piano, Nightcore, Rock, Electronic, OST, Soundtrack, Lyrics, Instrumental, Cover, Remix, Dance, Jumpstyle, Ambient, Orchestral.
+    Bad tags: song title words, artist names, random adjectives, "Young", "Harder", "Different", "Version", "Official", "HD", "Audio", "Video".
+
+11. Do not put artist names, composer names, channel names, or song titles in tags.
+    They already belong in artist/title fields.
+
+12. `collection` is optional.
+    Use it only for clear source/context labels from the input.
+    If unsure, use null.
+
+13. `subgenre` is optional.
+    Use it only when it is a real music subgenre/style category.
+    Do not put OP, ED, Lyrics, artist names, or song titles in subgenre.
+
+14. `reason` must be short, factual, and cautious.
+    Max 160 characters.
+    Do not claim facts not present in the input.
+    Avoid phrases like "clearly" unless the input explicitly proves it.
+
+15. `classification_confidence`:
+    0.90-1.00 only when title/metadata clearly states genre/style.
+    0.60-0.85 when genre is likely but inferred.
+    0.30-0.55 when only style/context is clear.
+    0.00-0.25 when mostly unknown.
 """
 
 
