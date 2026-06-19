@@ -359,6 +359,19 @@ input[type="text"]::placeholder, input[type="search"]::placeholder {
   text-overflow: ellipsis;
 }
 
+.song-genre,
+.song-tags {
+  font-size: 10px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.song-genre {
+  color: var(--accent);
+}
+
 .song-play {
   background: none;
   border: 1px solid var(--border);

@@ -17,6 +17,7 @@
   const playerTitle = $("player-title");
 
   let allSongs = [];
+  let activeFilter = "All";
   let tabInfo = null;
   let pollingTimer = null;
 
@@ -114,13 +115,63 @@
       const resp = await browser.runtime.sendMessage({ type: "GET_LIBRARY", q: q || "" });
       if (!resp.ok) throw new Error(resp.error);
       allSongs = resp.data.songs || [];
-      renderSongs(allSongs);
-      if (allSongs.length === 0) {
+      renderDynamicFilters(allSongs);
+      const visibleSongs = filterSongs(allSongs);
+      renderSongs(visibleSongs);
+      if (visibleSongs.length === 0) {
         $("empty-state").style.display = "flex";
       }
     } catch (err) {
       libraryStatus.textContent = "Error: " + err.message;
     }
+  }
+
+  function collectFilterValues(songs) {
+    const values = new Set();
+    for (const song of songs) {
+      const candidates = [
+        song.primary_genre,
+        song.style,
+        song.subgenre,
+        ...(song.tags || []),
+      ];
+      for (const value of candidates) {
+        const text = String(value || "").trim();
+        if (!text || text.toLowerCase() === "unknown genre") continue;
+        values.add(text);
+      }
+    }
+    return Array.from(values).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
+  }
+
+  function renderDynamicFilters(songs) {
+    const container = $("library-filters");
+    if (!container) return;
+    container.innerHTML = "";
+
+    const allButton = document.createElement("button");
+    allButton.dataset.filter = "All";
+    allButton.className = "filter-chip" + (activeFilter === "All" ? " active" : "");
+    allButton.textContent = "All";
+    allButton.addEventListener("click", () => applyFilter("All"));
+    container.appendChild(allButton);
+
+    for (const label of collectFilterValues(songs)) {
+      const button = document.createElement("button");
+      button.dataset.filter = label;
+      button.className = "filter-chip" + (activeFilter === label ? " active" : "");
+      button.textContent = label;
+      button.addEventListener("click", () => applyFilter(label));
+      container.appendChild(button);
+    }
+  }
+
+  function applyFilter(filter) {
+    activeFilter = filter;
+    renderDynamicFilters(allSongs);
+    const visibleSongs = filterSongs(allSongs);
+    renderSongs(visibleSongs);
+    $("empty-state").style.display = visibleSongs.length === 0 ? "flex" : "none";
   }
 
   function renderSongs(songs) {
@@ -137,10 +188,15 @@
 
       const info = document.createElement("div");
       info.className = "song-info";
+      const genre = song.primary_genre || song.genre || "Unknown Genre";
+      const badges = [song.style, song.subgenre].filter(Boolean);
+      const chips = [...badges, ...(song.tags || []).slice(0, 4), ...(song.mood || []).slice(0, 2)];
       info.innerHTML = `
         <div class="song-title">${esc(song.title || "Unknown")}</div>
         <div class="song-artist">${esc(song.artist || "Unknown Artist")}</div>
         <div class="song-album">${esc(song.album || "")}</div>
+        <div class="song-genre">${esc(genre)}</div>
+        <div class="song-tags">${chips.map(chip => `<span class="song-chip">${esc(chip)}</span>`).join("")}</div>
       `;
 
       const playBtn = document.createElement("button");
@@ -157,6 +213,21 @@
       li.appendChild(playBtn);
       songList.appendChild(li);
     }
+  }
+
+  function filterSongs(songs) {
+    if (activeFilter === "All") return songs;
+    const needle = activeFilter.toLowerCase();
+    return songs.filter(song => {
+      const values = [
+        song.primary_genre,
+        song.genre,
+        song.style,
+        song.subgenre,
+        ...(song.tags || []),
+      ].filter(Boolean).map(value => String(value).toLowerCase());
+      return values.some(value => value === needle || value.includes(needle));
+    });
   }
 
   function playSong(song) {

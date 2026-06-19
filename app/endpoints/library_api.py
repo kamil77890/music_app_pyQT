@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse, FileResponse
 from app.config.jellyfin_config import JellyfinConfig
 from app.endpoints.api_errors import api_error
 from app.logic.library_scanner import scan_music_files
+from app.logic.local_ai.enrichment_service import enrich_track_metadata
 from app.logic.ultimate_downloader import download_song, extract_video_id
 
 _YT_VIDEO_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{11}$")
@@ -87,20 +88,20 @@ async def library_songs(
     if not os.path.isdir(lib_path):
         return {"songs": [], "total": 0, "library_path": lib_path}
 
-    songs = scan_music_files(lib_path)
-    songs.sort(key=lambda s: s.get("title", "").lower())
+    scanned = scan_music_files(lib_path)
+    scanned.sort(key=lambda s: s.get("title", "").lower())
 
     if q:
         ql = q.lower()
-        songs = [
-            s for s in songs
+        scanned = [
+            s for s in scanned
             if ql in s.get("title", "").lower()
             or ql in s.get("artist", "").lower()
             or ql in s.get("album", "").lower()
         ]
 
-    total = len(songs)
-    songs = songs[:limit]
+    total = len(scanned)
+    songs = [enrich_track_metadata(song) for song in scanned[:limit]]
 
     return {
         "songs": songs,

@@ -5,6 +5,8 @@ from __future__ import annotations
 import os
 from typing import Any
 
+from app.logic.local_ai.metadata_normalizer import UNKNOWN_GENRE, normalize_genre
+
 
 def read_genre_year(file_path: str) -> dict[str, Any]:
     """Return subset of tags used by tagging / enrichment (genre, year as four-digit string)."""
@@ -39,7 +41,9 @@ def _read_mp3_tags(file_path: str, out: dict[str, Any]) -> None:
         if audio.tags:
             g = audio.tags.get("genre")
             if g:
-                out["genre"] = str(g[0])
+                genre = normalize_genre(str(g[0]))
+                if genre != UNKNOWN_GENRE:
+                    out["genre"] = genre
             d = audio.tags.get("date")
             if d:
                 y = _year_from_text(str(d[0]))
@@ -76,7 +80,9 @@ def _read_mp4_tags(file_path: str, out: dict[str, Any]) -> None:
 
     audio = MP4(file_path)
     if "\xa9gen" in audio and audio["\xa9gen"]:
-        out["genre"] = str(audio["\xa9gen"][0])
+        genre = normalize_genre(str(audio["\xa9gen"][0]))
+        if genre != UNKNOWN_GENRE:
+            out["genre"] = genre
     if "\xa9day" in audio and audio["\xa9day"]:
         y = _year_from_text(str(audio["\xa9day"][0]))
         if y:

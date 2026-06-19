@@ -20,7 +20,7 @@ function updateBadge() {
     browser.browserAction.setTitle({ title: "Backend offline \u2014 start music_app_pyQT", ...opts }).catch(() => {});
     return;
   }
-  const isYT = currentTabInfo.isYouTube;
+  const isYT = currentYouTubeTab.isYouTube;
   if (isYT) {
     browser.browserAction.setBadgeText({ text: "YT", ...opts }).catch(() => {});
     browser.browserAction.setBadgeBackgroundColor({ color: "#26a69a", ...opts }).catch(() => {});

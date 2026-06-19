@@ -189,6 +189,40 @@ class TestLibrarySongsEndpoint:
         resp = client.get("/api/library/songs?q=nonexistent")
         assert resp.status_code == 200
 
+    def test_library_songs_returns_clean_genre_and_enrichment_fields(self, monkeypatch, tmp_path):
+        import app.endpoints.library_api as lib_api
+
+        monkeypatch.setenv(LIBRARY_PATH_VAR, str(tmp_path / "music"))
+        (tmp_path / "music").mkdir(parents=True)
+        monkeypatch.setattr(
+            lib_api,
+            "scan_music_files",
+            lambda lib_path: [
+                {
+                    "title": "Song",
+                    "artist": "Artist",
+                    "album": "Album",
+                    "genre": "pzXMXGM21YI",
+                    "path": str(tmp_path / "music" / "song.mp3"),
+                }
+            ],
+        )
+
+        resp = client.get("/api/library/songs")
+
+        assert resp.status_code == 200
+        song = resp.json()["songs"][0]
+        assert song["genre"] == "Unknown Genre"
+        assert song["primary_genre"] == "Unknown Genre"
+        assert "style" in song
+        assert "subgenre" in song
+        assert song["mood"] == []
+        assert 0.0 <= song["classification_confidence"] <= 1.0
+        assert song["tags"] == []
+        assert song["metadata_quality"] == "medium"
+        assert song["metadata_source"] == "fallback"
+        assert "reason" in song
+
 
 class TestLibraryStreamEndpoint:
     def test_stream_outside_library_blocked(self):
