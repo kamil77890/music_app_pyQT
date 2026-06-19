@@ -2,7 +2,7 @@ import os
 import asyncio
 import base64
 from io import BytesIO
-from mutagen.id3 import ID3, TIT2, TPE1, TCON, ID3NoHeaderError
+from mutagen.id3 import ID3, TIT2, TPE1, TALB, TCON, ID3NoHeaderError
 from mutagen.mp4 import MP4
 from PIL import Image
 
@@ -118,12 +118,14 @@ def verify_metadata(file_path: str, format: str) -> dict:
         cover = ""
         title = "N/A"
         artist = "N/A"
+        album = ""
         videoId = "N/A"
 
         if format.lower() == 'mp3':
             id3 = ID3(file_path)
             title = str(id3.get('TIT2', 'N/A'))
             artist = str(id3.get('TPE1', 'N/A'))
+            album = str(id3.get('TALB', '')).strip()
             videoId = str(id3.get('TCON', 'N/A'))
             cover_data = extract_cover_from_metadata(file_path, format, videoId)
             cover = cover_data.get("cover_url", "") or cover_data.get("cover_base64", "")
@@ -132,6 +134,7 @@ def verify_metadata(file_path: str, format: str) -> dict:
             audio = MP4(file_path)
             title = audio.get('\xa9nam', ['N/A'])[0]
             artist = audio.get('\xa9ART', ['N/A'])[0]
+            album = str(audio.get('\xa9alb', [''])[0]).strip()
             videoId = audio.get('\xa9cmt', ['N/A'])[0]
             cover_data = extract_cover_from_metadata(file_path, format, videoId)
             cover = cover_data.get("cover_url", "") or cover_data.get("cover_base64", "")
@@ -139,6 +142,7 @@ def verify_metadata(file_path: str, format: str) -> dict:
         return {
             'title': title,
             'artist': artist,
+            'album': album,
             'videoId': videoId,
             'cover': cover,
             'has_cover': bool(cover)

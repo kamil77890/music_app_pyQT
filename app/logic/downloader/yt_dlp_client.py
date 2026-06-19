@@ -98,6 +98,14 @@ def _entry_to_result(entry: dict[str, Any], audio_format: str) -> Optional[dict[
     if not filepath or not os.path.exists(filepath):
         return None
 
+    album = entry.get("album") or ""
+    if isinstance(entry.get("albums"), list) and entry["albums"]:
+        album = str(entry["albums"][0]).strip()
+    track_num = ""
+    playlist_index = entry.get("playlist_index")
+    if playlist_index is not None:
+        track_num = str(playlist_index).zfill(2)
+
     return {
         "filepath": filepath,
         "id": entry.get("id", ""),
@@ -106,6 +114,11 @@ def _entry_to_result(entry: dict[str, Any], audio_format: str) -> Optional[dict[
         "thumbnail": _best_thumbnail(entry),
         "webpage_url": entry.get("webpage_url", ""),
         "duration": entry.get("duration"),
+        "album": album,
+        "track_number": track_num,
+        "release_year": entry.get("release_year") or entry.get("year"),
+        "genre": entry.get("genre") or "",
+        "playlist_index": playlist_index,
     }
 
 

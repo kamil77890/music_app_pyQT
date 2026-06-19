@@ -1,9 +1,13 @@
+import logging
+
 from fastapi import APIRouter, BackgroundTasks, Query, HTTPException
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from app.logic.ultimate_downloader import download_song, download_playlist
 from app.logic.metadata.add_metadata import verify_metadata
 import os
+
+log = logging.getLogger(__name__)
 
 router = APIRouter(tags=["download"])
 
@@ -16,20 +20,19 @@ def _safe_header(value: str) -> str:
         return str(value)
 
 
-def wrap_file_response(file_path: str):
+def _wrap_song_response(result: dict) -> FileResponse:
+    """Build a FileResponse from the dict returned by ``download_song``."""
+    file_path = result["jellyfin_path"]
     if not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail="File not found")
 
-    # Get actual metadata from the file
     ext = os.path.splitext(file_path)[1].lstrip(".").lower()
     meta = verify_metadata(file_path, ext) if ext in ("mp3", "mp4", "m4a") else {}
 
-    # Use actual title as filename if available, fallback to basename
     actual_title = meta.get("title", "") if meta else ""
     if not actual_title or actual_title == "N/A":
         actual_title = os.path.splitext(os.path.basename(file_path))[0]
 
-    # Build proper filename (ASCII-safe for HTTP headers)
     artist = meta.get("artist", "") if meta else ""
     if artist and artist != "N/A":
         download_filename = f"{artist} - {actual_title}.{ext}"
@@ -41,12 +44,13 @@ def wrap_file_response(file_path: str):
         filename=download_filename,
         media_type="application/octet-stream",
     )
-
-    # Add metadata headers (must be ASCII/latin-1 safe)
     if meta:
         response.headers["X-Title"] = _safe_header(meta.get("title", "Unknown"))
         response.headers["X-Artist"] = _safe_header(meta.get("artist", "Unknown"))
         response.headers["X-VideoId"] = _safe_header(meta.get("videoId", ""))
+    response.headers["X-Jellyfin-Path"] = file_path
+    if "legacy_path" in result:
+        response.headers["X-Legacy-Path"] = result["legacy_path"]
 
     return response
 
@@ -68,10 +72,19 @@ async def download(
 
     if playlistId != "0":
         file_path = await run_in_threadpool(download_playlist, playlistId, id, format)
+        if not os.path.exists(file_path):
+            raise HTTPException(status_code=404, detail="Playlist ZIP not found")
+        background_tasks.add_task(_refresh_recommendations_after_download)
+        response = FileResponse(
+            path=file_path,
+            filename=os.path.basename(file_path),
+            media_type="application/zip",
+        )
+        response.background = background_tasks
+        return response
     else:
-        file_path = await run_in_threadpool(download_song, videoId, id, format)
-
-    background_tasks.add_task(_refresh_recommendations_after_download)
-    response = wrap_file_response(file_path)
-    response.background = background_tasks
-    return response
+        result = await run_in_threadpool(download_song, videoId, id, format)
+        background_tasks.add_task(_refresh_recommendations_after_download)
+        response = _wrap_song_response(result)
+        response.background = background_tasks
+        return response

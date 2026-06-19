@@ -1,6 +1,7 @@
 import logging
 import os
 import re
+import shutil
 import zipfile
 from typing import Any, Optional
 from urllib.parse import urlparse, parse_qs
@@ -9,10 +10,12 @@ from fastapi import HTTPException
 from mutagen.id3 import ID3, TIT2, TPE1, TCON, ID3NoHeaderError
 from mutagen.mp4 import MP4
 
+from app.config.jellyfin_config import JellyfinConfig
 from app.config.stałe import Parameters
 from app.logic.downloader.filename import sanitize_filename
 from app.logic.downloader.cleanup import cleanup_temp_files
 from app.logic.downloader.yt_dlp_client import download_audio
+from app.logic.jellyfin_library import saveTrackToLibrary
 from app.logic.metadata.add_cover import embed_image_mp3, embed_image_mp4
 from app.logic.subtitles.pipeline import process_song_subtitles
 
@@ -21,6 +24,22 @@ log = logging.getLogger(__name__)
 
 def _download_dir() -> str:
     return Parameters.get_download_dir()
+
+
+def _temp_dir() -> str:
+    return JellyfinConfig.get_temp_dir()
+
+
+def _cleanup_temp_file(path: str) -> None:
+    """Remove a single temp file safely.  Errors are logged, never raised."""
+    try:
+        if os.path.isfile(path):
+            os.remove(path)
+            log.info("Removed temp file: %s", path)
+        else:
+            log.warning("Temp file not found for cleanup: %s", path)
+    except OSError as exc:
+        log.warning("Failed to remove temp file %s: %s", path, exc)
 
 
 _TITLE_CLEAN_PATTERNS = [
@@ -165,23 +184,30 @@ def process_subtitles(file_path: str, video_id: str, basename: str) -> None:
         log.warning("Failed to process subtitles: %s", e)
 
 
-def download_song(videoId: str, id: str = "0", format_ext: str = "mp3", base_path: str = None) -> str:
+def download_song(videoId: str, id: str = "0", format_ext: str = "mp3", base_path: str = None) -> dict:
+    """Download a song and save it to the Jellyfin library.
+
+    Returns a dict with ``jellyfin_path`` (path inside ``/srv/music/…``) and
+    ``filepath`` (same value, for backward compatibility).  When
+    ``MUSIC_KEEP_LEGACY_COPY=true`` an extra ``legacy_path`` key points to the
+    copy in the original download directory.
+    """
     try:
         clean_video_id = extract_video_id(videoId)
-        base = base_path or _download_dir()
-        os.makedirs(base, exist_ok=True)
+        temp = _temp_dir()
+        os.makedirs(temp, exist_ok=True)
 
         # Desired final name: client-provided id, else derived after download.
         desired_name = sanitize_filename(id) if id not in ("0", 0) else None
         if desired_name:
-            expected_path = os.path.join(base, f"{desired_name}.{format_ext}")
+            expected_path = os.path.join(temp, f"{desired_name}.{format_ext}")
             if os.path.exists(expected_path):
                 log.info("File already exists: %s", expected_path)
-                return expected_path
+                return {"filepath": expected_path, "jellyfin_path": expected_path}
 
         youtube_url = f"https://www.youtube.com/watch?v={clean_video_id}"
         results = download_audio(
-            youtube_url, base, audio_format=format_ext, quality="320"
+            youtube_url, temp, audio_format=format_ext, quality="320"
         )
         if not results:
             raise Exception("Download produced no file")
@@ -191,31 +217,72 @@ def download_song(videoId: str, id: str = "0", format_ext: str = "mp3", base_pat
 
         # Rename to the requested/clean name for predictable URLs.
         final_name = desired_name or sanitize_filename(track["title"])
-        final_path = os.path.join(base, f"{final_name}.{format_ext}")
-        if downloaded_path != final_path:
+        temp_path = os.path.join(temp, f"{final_name}.{format_ext}")
+        if downloaded_path != temp_path:
             try:
-                if os.path.exists(final_path):
+                if os.path.exists(temp_path):
                     os.remove(downloaded_path)
                 else:
-                    os.rename(downloaded_path, final_path)
+                    os.rename(downloaded_path, temp_path)
             except OSError:
-                final_path = downloaded_path
+                temp_path = downloaded_path
 
-        if not os.path.exists(final_path):
-            raise Exception(f"Download failed: {final_path} not created")
+        if not os.path.exists(temp_path):
+            raise Exception(f"Download failed: {temp_path} not created")
 
-        process_metadata(final_path, format_ext, clean_video_id, meta=track)
+        process_metadata(temp_path, format_ext, clean_video_id, meta=track)
+        process_subtitles(temp_path, clean_video_id, final_name)
 
-        process_subtitles(final_path, clean_video_id, final_name)
-        cleanup_temp_files(os.path.join(base, final_name))
+        keep_legacy = JellyfinConfig.get_keep_legacy_copy()
+        jellyfin_meta = {
+            "title": track.get("title", final_name),
+            "artist": track.get("artist", "Unknown Artist"),
+            "album": track.get("album") or "Unknown Album",
+            "trackNumber": track.get("track_number") or "00",
+            "year": track.get("release_year"),
+            "genre": track.get("genre") or "",
+            "videoId": clean_video_id,
+            "sourceUrl": f"https://www.youtube.com/watch?v={clean_video_id}",
+            "cover": track.get("thumbnail", ""),
+        }
+        jellyfin_path = saveTrackToLibrary(temp_path, jellyfin_meta, copy=True)
 
-        return final_path
+        # Legacy backup: copy to the original download directory
+        if keep_legacy:
+            _ensure_legacy_copy(temp_path, final_name, format_ext)
+
+        # Clean up temp file unless legacy copy keeps it
+        if not keep_legacy:
+            _cleanup_temp_file(temp_path)
+
+        # Clean up helper files (thumbnails, subtitles, etc.)
+        cleanup_temp_files(os.path.join(temp, final_name))
+
+        result: dict[str, str] = {
+            "filepath": jellyfin_path,
+            "jellyfin_path": jellyfin_path,
+        }
+        if keep_legacy:
+            result["legacy_path"] = os.path.join(_download_dir(), f"{final_name}.{format_ext}")
+        return result
 
     except HTTPException:
         raise
     except Exception as e:
         log.error("Error in download_song: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+def _ensure_legacy_copy(source_path: str, final_name: str, format_ext: str) -> str:
+    legacy_dir = _download_dir()
+    os.makedirs(legacy_dir, exist_ok=True)
+    legacy_path = os.path.join(legacy_dir, f"{final_name}.{format_ext}")
+    try:
+        shutil.copy2(source_path, legacy_path)
+        log.info("Legacy copy saved: %s", legacy_path)
+    except OSError as exc:
+        log.warning("Failed to create legacy copy at %s: %s", legacy_path, exc)
+    return legacy_path
 
 
 def create_playlist_zip(processed_files: list, playlist_title: str) -> str:
@@ -232,12 +299,12 @@ def create_playlist_zip(processed_files: list, playlist_title: str) -> str:
 def download_playlist(playlistId: str, audio_format: str = "mp3") -> str:
     try:
         playlist_url = f"https://www.youtube.com/playlist?list={playlistId}"
-        playlist_dir = _download_dir()
-        os.makedirs(playlist_dir, exist_ok=True)
+        temp = _temp_dir()
+        os.makedirs(temp, exist_ok=True)
 
         results = download_audio(
             playlist_url,
-            playlist_dir,
+            temp,
             audio_format=audio_format,
             quality="320",
             noplaylist=False,
@@ -245,7 +312,9 @@ def download_playlist(playlistId: str, audio_format: str = "mp3") -> str:
         if not results:
             raise Exception("No files were processed")
 
+        keep_legacy = JellyfinConfig.get_keep_legacy_copy()
         processed_files = []
+        track_info = []  # (file_path, basename, ext)
         for track in results:
             file_path = track["filepath"]
             if not os.path.exists(file_path):
@@ -253,12 +322,44 @@ def download_playlist(playlistId: str, audio_format: str = "mp3") -> str:
             process_metadata(file_path, audio_format, track.get("id", ""), meta=track)
             basename = os.path.splitext(os.path.basename(file_path))[0]
             process_subtitles(file_path, track.get("id", ""), basename)
+
+            jellyfin_meta = {
+                "title": track.get("title", basename),
+                "artist": track.get("artist", "Unknown Artist"),
+                "album": track.get("album") or "Unknown Album",
+                "trackNumber": track.get("track_number") or "00",
+                "year": track.get("release_year"),
+                "genre": track.get("genre") or "",
+                "videoId": track.get("id", ""),
+                "sourceUrl": track.get("webpage_url", ""),
+                "cover": track.get("thumbnail", ""),
+            }
+            try:
+                jellyfin_path = saveTrackToLibrary(file_path, jellyfin_meta, copy=True)
+            except Exception as jellyfin_err:
+                log.warning("Failed to save to Jellyfin library: %s", jellyfin_err)
+                processed_files.append(file_path)
+                continue
+
+            ext = os.path.splitext(file_path)[1].lstrip(".")
+            track_info.append((file_path, basename, ext))
             processed_files.append(file_path)
 
         if not processed_files:
             raise Exception("No files were processed")
 
-        return create_playlist_zip(processed_files, f"playlist_{playlistId}")
+        # Create ZIP while files are still in temp
+        zip_path = create_playlist_zip(processed_files, f"playlist_{playlistId}")
+
+        # Cleanup after ZIP is created
+        for file_path, basename, ext in track_info:
+            if keep_legacy:
+                _ensure_legacy_copy(file_path, basename, ext)
+            else:
+                _cleanup_temp_file(file_path)
+            cleanup_temp_files(os.path.join(temp, basename))
+
+        return zip_path
 
     except HTTPException:
         raise
