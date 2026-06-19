@@ -4,7 +4,7 @@
   const CONTAINER_ID = "jf-music-saver";
   const POLL_INTERVAL = 5000;
   const TOAST_DURATION = 3500;
-  const MUSIC_ICON_URL = browser.runtime.getURL("icons/music_icon.png");
+  const MUSIC_ICON_URL = browser.runtime.getURL("icons/icon-48.png");
 
   let state = {
     videoId: null,
