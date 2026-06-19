@@ -31,6 +31,7 @@ from app.endpoints import (
     upload,
     library_repair,
     lyrics,
+    library_api,
 )
 from app.endpoints import cloud as cloud_router
 from app.endpoints import subscriptions as subs_router
@@ -210,6 +211,7 @@ class Application:
         self.app.include_router(upload.router)
         self.app.include_router(library_repair.router)
         self.app.include_router(lyrics.router)
+        self.app.include_router(library_api.router)
 
     def run(self) -> FastAPI:
         self.set_up()

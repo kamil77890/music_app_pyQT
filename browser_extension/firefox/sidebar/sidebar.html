@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Music Library</title>
+  <link rel="stylesheet" href="sidebar.css">
+</head>
+<body>
+  <div id="app">
+    <header>
+      <h1>Music Library</h1>
+      <span id="status-badge" class="badge-offline">offline</span>
+      <button id="btn-refresh" title="Refresh library">&#x21bb;</button>
+    </header>
+
+    <section id="actions">
+      <button id="btn-save-tab" class="primary-btn">Save current YouTube tab</button>
+      <div class="url-row">
+        <input type="text" id="input-url" placeholder="YouTube URL ..." />
+        <button id="btn-save-url">Save</button>
+      </div>
+    </section>
+
+    <section id="search-section">
+      <input type="search" id="input-search" placeholder="Search library..." />
+    </section>
+
+    <section id="library-section">
+      <p id="library-status">Loading...</p>
+      <ul id="song-list"></ul>
+    </section>
+
+    <section id="player-section">
+      <audio id="audio-player" controls></audio>
+    </section>
+  </div>
+
+  <script src="../shared/api.js"></script>
+  <script src="sidebar.js"></script>
+</body>
+</html>

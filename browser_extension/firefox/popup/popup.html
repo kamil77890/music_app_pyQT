@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Music Library</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div id="popup">
+    <h1>Music Library Saver</h1>
+
+    <div id="status-row">
+      <span id="backend-status" class="offline">backend offline</span>
+    </div>
+
+    <div class="actions">
+      <button id="btn-open-sidebar">Open Sidebar</button>
+      <button id="btn-save-tab">Save current YouTube</button>
+    </div>
+
+    <div class="info">
+      <span id="current-url-display"></span>
+    </div>
+
+    <div class="footer">
+      <a href="http://localhost:8000/api/health" target="_blank">localhost:8000</a>
+    </div>
+  </div>
+  <script src="../shared/api.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>

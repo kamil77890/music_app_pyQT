@@ -1,0 +1,46 @@
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+:root {
+  --bg: #1a1a2e;
+  --surface: #16213e;
+  --accent: #1e88e5;
+  --text: #e0e0e0;
+  --text-muted: #888;
+  --success: #4caf50;
+  --error: #ef5350;
+  --radius: 6px;
+}
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: 13px;
+  background: var(--bg);
+  color: var(--text);
+  width: 280px;
+  padding: 12px;
+}
+#popup { display: flex; flex-direction: column; gap: 10px; }
+h1 { font-size: 15px; font-weight: 600; text-align: center; }
+
+#status-row { text-align: center; }
+#backend-status { font-size: 11px; padding: 2px 10px; border-radius: 10px; }
+.offline { background: #5a1a1a; color: var(--error); }
+.online  { background: #1a4a1a; color: var(--success); }
+
+.actions { display: flex; flex-direction: column; gap: 6px; }
+button {
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid #2a3a5a;
+  border-radius: var(--radius);
+  padding: 8px 14px;
+  font-size: 12px;
+  cursor: pointer;
+  font-weight: 500;
+}
+button:hover { background: #1f2f50; }
+#btn-save-tab { background: var(--accent); border-color: var(--accent); color: #fff; }
+#btn-save-tab:hover { background: #1565c0; }
+
+.info { font-size: 11px; color: var(--text-muted); text-align: center; word-break: break-all; }
+.footer { text-align: center; }
+.footer a { color: var(--accent); font-size: 11px; text-decoration: none; }
+.footer a:hover { text-decoration: underline; }
