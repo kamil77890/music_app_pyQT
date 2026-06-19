@@ -9,6 +9,7 @@ from typing import Any
 from app.config.jellyfin_config import JellyfinConfig
 from app.logic.library_scanner import scan_music_files
 from app.logic.local_ai.classifier_base import CLASSIFIER_VERSION, LocalMetadataClassifier
+from app.logic.local_ai.classification_validator import is_broad_genre, is_style_label
 from app.logic.local_ai.config import LocalAIConfig, get_config
 from app.logic.local_ai.fallback_classifier import FallbackClassifier
 from app.logic.local_ai.metadata_normalizer import UNKNOWN_GENRE, normalize_album, normalize_genre
@@ -17,6 +18,84 @@ from app.logic.local_ai.ollama_classifier import OllamaClassifier
 
 _cache_lock = threading.Lock()
 _cache_state: dict[str, Any] = {"path": "", "data": {}}
+_MANAGED_TAGS_ID3_DESC = "LOCAL_AI_TAGS"
+
+
+def _parse_managed_tags(raw: Any) -> list[str]:
+    if isinstance(raw, list):
+        return [str(item).strip() for item in raw if str(item).strip()]
+    text = str(raw or "").strip()
+    if not text:
+        return []
+    try:
+        parsed = json.loads(text)
+        if isinstance(parsed, list):
+            return [str(item).strip() for item in parsed if str(item).strip()]
+    except json.JSONDecodeError:
+        pass
+    return [part.strip() for part in text.split(",") if part.strip()]
+
+
+def read_audio_file_metadata(path: str) -> dict[str, Any]:
+    ext = os.path.splitext(path)[1].lower()
+    out: dict[str, Any] = {"genre": "", "managed_tags": []}
+    if ext == ".mp3":
+        from mutagen.id3 import ID3, ID3NoHeaderError
+
+        try:
+            id3 = ID3(path)
+        except ID3NoHeaderError:
+            return out
+        if id3.get("TCON"):
+            out["genre"] = str(id3["TCON"].text[0]).strip()
+        for key in id3.keys():
+            if key.startswith("TXXX:") and key.split(":", 1)[1] == _MANAGED_TAGS_ID3_DESC:
+                out["managed_tags"] = _parse_managed_tags(id3[key].text[0])
+                break
+    elif ext in (".m4a", ".mp4"):
+        from mutagen.mp4 import MP4
+
+        audio = MP4(path)
+        if "\xa9gen" in audio:
+            out["genre"] = str(audio["\xa9gen"][0]).strip()
+        raw_tags = audio.get(f"----:com.apple.iTunes:{_MANAGED_TAGS_ID3_DESC}")
+        if raw_tags:
+            raw = raw_tags[0]
+            text = raw.decode("utf-8") if isinstance(raw, bytes) else str(raw)
+            out["managed_tags"] = _parse_managed_tags(text)
+    return out
+
+
+def _hydrate_track_from_file(track: dict[str, Any]) -> dict[str, Any]:
+    path = track.get("path") or track.get("file_path") or ""
+    if not path or not os.path.isfile(path):
+        return dict(track)
+    hydrated = dict(track)
+    file_meta = read_audio_file_metadata(path)
+    if file_meta.get("genre") and not hydrated.get("genre"):
+        hydrated["genre"] = file_meta["genre"]
+    managed_tags = file_meta.get("managed_tags") or []
+    if managed_tags:
+        hydrated["file_tags"] = list(managed_tags)
+    return hydrated
+
+
+def _track_for_classification(track: dict[str, Any]) -> dict[str, Any]:
+    clean = dict(track)
+    for key in ("tags", "file_tags", "managed_tags", "existing_tags"):
+        clean.pop(key, None)
+    return clean
+
+
+def _writable_genre(metadata: dict[str, Any]) -> str:
+    genre = normalize_genre(metadata.get("genre"))
+    if genre == UNKNOWN_GENRE or is_style_label(genre) or not is_broad_genre(genre):
+        return UNKNOWN_GENRE
+    return genre
+
+
+def _invalidate_cache_entry(cache: dict[str, Any], cache_key: str) -> None:
+    cache.pop(cache_key, None)
 
 
 def _track_cache_key(track: dict[str, Any]) -> str:
@@ -156,29 +235,44 @@ def _attach_cache_meta(result: dict[str, Any], *, track: dict[str, Any], config:
     return enriched
 
 
-def enrich_track_metadata(track: dict[str, Any], *, force_local_ai: bool = False, use_cache: bool = True) -> dict[str, Any]:
+def enrich_track_metadata(
+    track: dict[str, Any],
+    *,
+    force_local_ai: bool = False,
+    use_cache: bool = True,
+    repair_managed_tags: bool = False,
+) -> dict[str, Any]:
     config = get_config()
-    cache_key = _track_cache_key(track)
+    hydrated = _hydrate_track_from_file(track)
+    cache_key = _track_cache_key(hydrated)
+
+    if repair_managed_tags:
+        use_cache = False
+        with _cache_lock:
+            cache = _load_cache_store_unlocked(config.cache_path)
+            _invalidate_cache_entry(cache, cache_key)
+            _persist_cache_store_unlocked(config.cache_path, cache)
 
     if use_cache:
         with _cache_lock:
             cache = _load_cache_store_unlocked(config.cache_path)
-            cached_result = _cached_result_if_valid(cache.get(cache_key), track=track, config=config)
+            cached_result = _cached_result_if_valid(cache.get(cache_key), track=hydrated, config=config)
             if cached_result is not None:
                 return cached_result
 
     classifier = get_classifier(config=config, force_local_ai=force_local_ai)
-    result = classifier.classify(track)
-    enriched = dict(track)
+    result = classifier.classify(_track_for_classification(hydrated))
+    enriched = dict(hydrated)
     enriched.update(result)
+    enriched.pop("file_tags", None)
 
     if use_cache:
         with _cache_lock:
             cache = _load_cache_store_unlocked(config.cache_path)
-            cached_result = _cached_result_if_valid(cache.get(cache_key), track=track, config=config)
+            cached_result = _cached_result_if_valid(cache.get(cache_key), track=hydrated, config=config)
             if cached_result is not None:
                 return cached_result
-            cache[cache_key] = _attach_cache_meta(enriched, track=track, config=config)
+            cache[cache_key] = _attach_cache_meta(enriched, track=hydrated, config=config)
             _persist_cache_store_unlocked(config.cache_path, cache)
 
     return enriched
@@ -186,8 +280,10 @@ def enrich_track_metadata(track: dict[str, Any], *, force_local_ai: bool = False
 
 def write_audio_metadata(path: str, metadata: dict[str, Any]) -> None:
     ext = os.path.splitext(path)[1].lower()
-    genre = normalize_genre(metadata.get("genre"))
+    genre = _writable_genre(metadata)
     video_id = metadata.get("videoId") or metadata.get("video_id") or ""
+    managed_tags = [str(tag).strip() for tag in (metadata.get("tags") or []) if str(tag).strip()]
+    managed_tags_payload = json.dumps(managed_tags, ensure_ascii=False)
     if ext == ".mp3":
         from mutagen.id3 import ID3, ID3NoHeaderError, TCON, TXXX
 
@@ -198,6 +294,9 @@ def write_audio_metadata(path: str, metadata: dict[str, Any]) -> None:
         id3.delall("TCON")
         if genre != UNKNOWN_GENRE:
             id3.add(TCON(encoding=3, text=genre))
+        id3.delall(f"TXXX:{_MANAGED_TAGS_ID3_DESC}")
+        if managed_tags:
+            id3.add(TXXX(encoding=3, desc=_MANAGED_TAGS_ID3_DESC, text=managed_tags_payload))
         if video_id:
             id3.delall("TXXX:YOUTUBE_VIDEO_ID")
             id3.add(TXXX(encoding=3, desc="YOUTUBE_VIDEO_ID", text=video_id))
@@ -210,6 +309,11 @@ def write_audio_metadata(path: str, metadata: dict[str, Any]) -> None:
             audio["\xa9gen"] = [genre]
         elif "\xa9gen" in audio:
             del audio["\xa9gen"]
+        managed_key = f"----:com.apple.iTunes:{_MANAGED_TAGS_ID3_DESC}"
+        if managed_key in audio:
+            del audio[managed_key]
+        if managed_tags:
+            audio[managed_key] = [managed_tags_payload.encode("utf-8")]
         if video_id:
             audio["----:com.apple.iTunes:YOUTUBE_VIDEO_ID"] = [video_id.encode("utf-8")]
         audio.save()
@@ -225,6 +329,7 @@ def enrich_library_batch(
     write_tags: bool = False,
     group_preview: bool = False,
     force_local_ai: bool = False,
+    repair_managed_tags: bool = False,
 ) -> dict[str, Any]:
     config = get_config()
     cache = _load_cache(config.cache_path)
@@ -242,10 +347,14 @@ def enrich_library_batch(
             cached = cache.get(cache_key)
             cache_meta = cached.get("_cache_meta") if isinstance(cached, dict) else None
             track_changed = not isinstance(cache_meta, dict) or cache_meta.get("track_hash") != _track_hash(song)
-            if _cache_entry_complete(cached, config=config) and not track_changed:
+            if _cache_entry_complete(cached, config=config) and not track_changed and not repair_managed_tags:
                 enriched = {k: v for k, v in cached.items() if k != "_cache_meta"}
             else:
-                enriched = enrich_track_metadata(song, force_local_ai=force_local_ai)
+                enriched = enrich_track_metadata(
+                    song,
+                    force_local_ai=force_local_ai,
+                    repair_managed_tags=repair_managed_tags,
+                )
             if only_missing_genre and normalize_genre(song.get("genre")) != UNKNOWN_GENRE:
                 continue
             if only_low_quality and enriched.get("metadata_quality") != "low":

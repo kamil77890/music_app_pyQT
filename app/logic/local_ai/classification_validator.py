@@ -205,6 +205,7 @@ _ROCK_VERSION_MARKER = re.compile(r"\brock version\b", re.IGNORECASE)
 _PIANO_MARKER = re.compile(r"\b(piano|piano version|piano cover|piano arrangement|arr\.?)\b", re.IGNORECASE)
 _NIGHTCORE_MARKER = re.compile(r"\bnightcore\b", re.IGNORECASE)
 _LYRICS_MARKER = re.compile(r"\b(lyrics|lyric|lyric video|lyrics video)\b", re.IGNORECASE)
+_INSTRUMENTAL_MARKER = re.compile(r"\b(instrumental|no vocals|without vocals|karaoke)\b", re.IGNORECASE)
 _JUMPSTYLE_MARKER = re.compile(r"\bjumpstyle\b", re.IGNORECASE)
 _DANCE_MARKER = re.compile(r"\b(jumpstyle|dance|edm)\b", re.IGNORECASE)
 _REMIX_COVER_MARKER = re.compile(r"\b(remix|cover|version|arrangement|arr\.?)\b", re.IGNORECASE)
@@ -275,13 +276,35 @@ def _title_case_tag(value: str) -> str:
     return " ".join(part.capitalize() if part.lower() not in {"and", "&", "of"} else part for part in text.split())
 
 
-def _track_input_haystack(track: dict[str, Any] | None) -> str:
+def _trusted_existing_genre(track: dict[str, Any] | None) -> str:
     if not track:
         return ""
-    return " ".join(
+    raw = track.get("existing_genre") or track.get("genre") or ""
+    normalized = normalize_genre(raw)
+    if normalized == UNKNOWN_GENRE or is_garbage_genre(raw):
+        return ""
+    if is_context_label(normalized) or is_style_label(normalized):
+        return ""
+    if not is_broad_genre(normalized):
+        return ""
+    return normalized
+
+
+def _track_proof_haystack(track: dict[str, Any] | None) -> str:
+    if not track:
+        return ""
+    parts = [
         str(track.get(key) or "")
-        for key in ("title", "artist", "album", "source_title", "sourceTitle", "description", "genre", "existing_genre")
-    )
+        for key in ("title", "artist", "album", "source_title", "sourceTitle", "description")
+    ]
+    trusted_genre = _trusted_existing_genre(track)
+    if trusted_genre:
+        parts.append(trusted_genre)
+    return " ".join(parts)
+
+
+def _track_input_haystack(track: dict[str, Any] | None) -> str:
+    return _track_proof_haystack(track)
 
 
 def _input_haystack(track: dict[str, Any] | None, *, parsed: dict[str, Any] | None = None) -> str:
@@ -349,23 +372,24 @@ def _tag_is_grounded(
     genre_norm = _normalize_key(genre)
     primary_norm = _normalize_key(primary_genre)
     style_norm = _normalize_key(style) if style else ""
+    style_is_grounded = bool(style_norm and _style_is_grounded(style, track_haystack))
 
     if not tag_norm:
         return False
 
     if tag_norm in {genre_norm, primary_norm} and is_broad_genre(tag) and tag != UNKNOWN_GENRE:
         return True
-    if style_norm and tag_norm == style_norm:
+    if style_is_grounded and tag_norm == style_norm:
         return True
 
     if tag_norm == "piano":
-        return bool(_PIANO_MARKER.search(haystack_norm)) or style_norm == "piano"
+        return bool(_PIANO_MARKER.search(haystack_norm)) or (style_is_grounded and style_norm == "piano")
     if tag_norm == "lyrics":
         return bool(_LYRICS_MARKER.search(haystack_norm))
     if tag_norm == "jumpstyle":
-        return bool(_JUMPSTYLE_MARKER.search(haystack_norm)) or style_norm == "jumpstyle"
+        return bool(_JUMPSTYLE_MARKER.search(haystack_norm)) or (style_is_grounded and style_norm == "jumpstyle")
     if tag_norm == "nightcore":
-        return bool(_NIGHTCORE_MARKER.search(haystack_norm)) or style_norm == "nightcore"
+        return bool(_NIGHTCORE_MARKER.search(haystack_norm)) or (style_is_grounded and style_norm == "nightcore")
     if tag_norm == "rock":
         return (
             bool(re.search(r"\brock\b", haystack_norm))
@@ -373,6 +397,8 @@ def _tag_is_grounded(
             or primary_norm == "rock"
             or bool(_ROCK_VERSION_MARKER.search(haystack_norm))
         )
+    if tag_norm == "pop":
+        return genre_norm == "pop" or primary_norm == "pop" or "pop" in haystack_norm
     if tag_norm == "electronic":
         return genre_norm == "electronic" or primary_norm == "electronic" or "electronic" in haystack_norm
     if tag_norm == "dance":
@@ -390,11 +416,11 @@ def _tag_is_grounded(
     if tag_norm == "anime":
         return bool(_ANIME_MARKER.search(haystack_norm))
     if tag_norm == "cover":
-        return bool(re.search(r"\bcover\b", haystack_norm)) or style_norm == "cover"
+        return bool(re.search(r"\bcover\b", haystack_norm)) or (style_is_grounded and style_norm == "cover")
     if tag_norm == "remix":
-        return bool(re.search(r"\bremix\b", haystack_norm)) or style_norm == "remix"
+        return bool(re.search(r"\bremix\b", haystack_norm)) or (style_is_grounded and style_norm == "remix")
     if tag_norm == "instrumental":
-        return "instrumental" in haystack_norm or style_norm == "instrumental"
+        return bool(_INSTRUMENTAL_MARKER.search(haystack_norm)) or (style_is_grounded and style_norm == "instrumental")
     if tag_norm == "classical":
         return bool(_CLASSICAL_MARKER.search(haystack_norm)) or genre_norm == "classical"
     if tag_norm in {"opening", "ending", "op", "ed"}:
@@ -418,7 +444,7 @@ def _style_is_grounded(style: str | None, track_haystack: str) -> bool:
     if norm == "jumpstyle":
         return bool(_JUMPSTYLE_MARKER.search(haystack))
     if is_style_label(style):
-        return norm in haystack
+        return bool(_INSTRUMENTAL_MARKER.search(haystack)) if norm == "instrumental" else norm in haystack
     return True
 
 

@@ -133,6 +133,8 @@ def _build_song_entry(file_path: str, filename: str, cached_song: dict | None = 
 
     title = meta.get("title") or os.path.splitext(filename)[0]
     artist = meta.get("artist") or "Unknown Artist"
+    album = meta.get("album") or ""
+    genre = meta.get("genre") or ""
     video_id = meta.get("videoId") or ""
     cover = meta.get("cover") or ""
 
@@ -146,6 +148,8 @@ def _build_song_entry(file_path: str, filename: str, cached_song: dict | None = 
     song = {
         "title": title,
         "artist": artist,
+        "album": album,
+        "genre": genre,
         "videoId": video_id,
         "cover": cover,
         "filename": filename,

@@ -565,3 +565,152 @@ def test_validator_same_payload_twice_returns_same_result():
     second = validate_model_classification(payload, track=track)
 
     assert first == second
+
+
+def test_validator_avril_complicated_rejects_piano():
+    from app.logic.local_ai.classification_validator import validate_model_classification
+
+    result = validate_model_classification(
+        {
+            "genre": "Pop",
+            "primary_genre": "Pop",
+            "style": "Piano",
+            "subgenre": None,
+            "collection": None,
+            "tags": ["Piano", "Pop"],
+            "mood": [],
+            "metadata_quality": "medium",
+            "classification_confidence": 0.9,
+            "reason": "Pop piano cover.",
+        },
+        track={"title": "Avril Lavigne - Complicated (Official Video)", "artist": "Avril Lavigne"},
+    )
+
+    assert "Piano" not in result["tags"]
+    assert result["style"] is None
+    assert result["genre"] == "Pop"
+
+
+def test_validator_skars_massacre_rejects_piano():
+    from app.logic.local_ai.classification_validator import validate_model_classification
+
+    result = validate_model_classification(
+        {
+            "genre": "Unknown Genre",
+            "primary_genre": "Unknown Genre",
+            "style": "Piano",
+            "subgenre": None,
+            "collection": None,
+            "tags": ["Piano"],
+            "mood": [],
+            "metadata_quality": "low",
+            "classification_confidence": 0.9,
+            "reason": "Animated music video.",
+        },
+        track={"title": "SKARS - Massacre (Animated Music Video)", "artist": "SKARS"},
+    )
+
+    assert "Piano" not in result["tags"]
+    assert result["style"] is None
+
+
+def test_validator_linkin_park_from_the_inside_rejects_instrumental():
+    from app.logic.local_ai.classification_validator import validate_model_classification
+
+    result = validate_model_classification(
+        {
+            "genre": "Rock",
+            "primary_genre": "Rock",
+            "style": "Instrumental",
+            "subgenre": None,
+            "collection": None,
+            "tags": ["Instrumental"],
+            "mood": [],
+            "metadata_quality": "medium",
+            "classification_confidence": 0.9,
+            "reason": "Rock track.",
+        },
+        track={
+            "title": "From The Inside (Official Music Video) [4K UPGRADE] – Linkin Park",
+            "artist": "Linkin Park",
+        },
+    )
+
+    assert "Instrumental" not in result["tags"]
+    assert result["style"] is None
+
+
+def test_validator_middle_of_the_night_anime_mix_rejects_nightcore():
+    from app.logic.local_ai.classification_validator import validate_model_classification
+
+    result = validate_model_classification(
+        {
+            "genre": "Electronic",
+            "primary_genre": "Electronic",
+            "style": "Nightcore",
+            "subgenre": None,
+            "collection": None,
+            "tags": ["Nightcore"],
+            "mood": [],
+            "metadata_quality": "medium",
+            "classification_confidence": 0.9,
+            "reason": "Anime mix.",
+        },
+        track={"title": "Middle of the Night「AMV」Anime Mix", "artist": "Artist"},
+    )
+
+    assert "Nightcore" not in result["tags"]
+    assert result["style"] is None
+
+
+def test_validator_existing_file_piano_tag_is_not_proof():
+    from app.logic.local_ai.classification_validator import validate_model_classification
+
+    result = validate_model_classification(
+        {
+            "genre": "Pop",
+            "primary_genre": "Pop",
+            "style": None,
+            "subgenre": None,
+            "collection": None,
+            "tags": ["Piano", "Pop"],
+            "mood": [],
+            "metadata_quality": "medium",
+            "classification_confidence": 0.9,
+            "reason": "Pop track.",
+        },
+        track={
+            "title": "Avril Lavigne - Complicated (Official Video)",
+            "artist": "Avril Lavigne",
+            "file_tags": ["Piano"],
+            "genre": "Piano",
+        },
+    )
+
+    assert "Piano" not in result["tags"]
+
+
+def test_write_audio_metadata_replaces_managed_tags(tmp_path):
+    from mutagen.id3 import ID3, TCON, TXXX
+
+    from app.logic.local_ai.enrichment_service import read_audio_file_metadata, write_audio_metadata
+
+    audio_path = tmp_path / "song.mp3"
+    audio_path.write_bytes(b"fake audio")
+    tags = ID3()
+    tags.add(TCON(encoding=3, text="Piano"))
+    tags.add(TXXX(encoding=3, desc="LOCAL_AI_TAGS", text='["Piano", "Instrumental"]'))
+    tags.save(str(audio_path), v2_version=3)
+
+    write_audio_metadata(
+        str(audio_path),
+        {
+            "genre": "Pop",
+            "tags": ["Pop"],
+            "videoId": "",
+        },
+    )
+
+    repaired = ID3(str(audio_path))
+    assert str(repaired["TCON"].text[0]) == "Pop"
+    assert read_audio_file_metadata(str(audio_path))["managed_tags"] == ["Pop"]

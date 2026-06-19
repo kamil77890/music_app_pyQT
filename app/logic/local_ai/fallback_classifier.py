@@ -26,7 +26,7 @@ class FallbackClassifier(LocalMetadataClassifier):
         primary_genre = clean_genre if clean_genre != UNKNOWN_GENRE else UNKNOWN_GENRE
 
         confidence = 0.2 if clean_genre != UNKNOWN_GENRE else 0.0
-        reason = "Existing tags preserved after metadata cleanup." if clean_genre != UNKNOWN_GENRE else "No reliable genre metadata available."
+        reason = "Existing genre preserved after metadata cleanup." if clean_genre != UNKNOWN_GENRE else "No reliable genre metadata available."
 
         working = {
             "title": title,
@@ -45,7 +45,7 @@ class FallbackClassifier(LocalMetadataClassifier):
             "subgenre": None,
             "collection": None,
             "mood": [],
-            "tags": list(track.get("tags") or []),
+            "tags": [],
             "metadata_quality": calculate_metadata_quality(working),
             "metadata_source": "fallback",
             "classification_confidence": confidence,

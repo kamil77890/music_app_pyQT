@@ -583,3 +583,56 @@ def test_ollama_classifier_uses_deterministic_options(monkeypatch):
     assert options.get("temperature") == 0
     assert options.get("top_p") == 0.1
     assert options.get("seed") == 42
+
+
+def test_enrich_track_metadata_does_not_keep_ungrounded_file_tags(monkeypatch, tmp_path):
+    from app.logic.local_ai import enrichment_service
+    from app.logic.local_ai.enrichment_service import enrich_track_metadata
+    from app.logic.local_ai.ollama_classifier import OllamaClassifier
+
+    cache_path = tmp_path / "cache.json"
+    monkeypatch.setenv("LOCAL_AI_CACHE_PATH", str(cache_path))
+    monkeypatch.setenv("LOCAL_AI_METADATA_ENABLED", "true")
+
+    monkeypatch.setattr(
+        enrichment_service,
+        "read_audio_file_metadata",
+        lambda path: {"genre": "Piano", "managed_tags": ["Piano"]},
+    )
+    monkeypatch.setattr(
+        enrichment_service,
+        "is_ollama_model_available",
+        lambda *args, **kwargs: True,
+    )
+    monkeypatch.setattr(
+        OllamaClassifier,
+        "_call_ollama",
+        lambda self, prompt: json.dumps(
+            {
+                "genre": "Pop",
+                "primary_genre": "Pop",
+                "style": "Piano",
+                "subgenre": None,
+                "collection": None,
+                "tags": ["Piano", "Pop"],
+                "mood": [],
+                "metadata_quality": "medium",
+                "classification_confidence": 0.9,
+                "reason": "Pop piano video.",
+            }
+        ),
+    )
+
+    track = {
+        "title": "Avril Lavigne - Complicated (Official Video)",
+        "artist": "Avril Lavigne",
+        "album": "",
+        "path": str(tmp_path / "song.mp3"),
+        "fileMtime": 1,
+        "fileSize": 2,
+    }
+    (tmp_path / "song.mp3").write_bytes(b"fake")
+    enriched = enrich_track_metadata(track, force_local_ai=True, repair_managed_tags=True)
+
+    assert "Piano" not in enriched["tags"]
+    assert enriched.get("style") is None
