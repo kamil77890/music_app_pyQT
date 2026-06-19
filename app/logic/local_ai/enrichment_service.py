@@ -9,7 +9,7 @@ from typing import Any
 
 from app.config.jellyfin_config import JellyfinConfig
 from app.logic.jellyfin_library import _resolve_duplicate, _safe_path, _set_permissions, sanitize_component
-from app.logic.library_scanner import scan_music_files
+from app.logic.library_scanner import SUPPORTED_EXTENSIONS, scan_music_files
 from app.logic.local_ai.album_validator import is_missing_album, is_repairable_source_album_folder
 from app.logic.local_ai.classifier_base import CLASSIFIER_VERSION, LocalMetadataClassifier
 from app.logic.local_ai.classification_validator import is_broad_genre, is_style_label
@@ -23,6 +23,8 @@ _cache_lock = threading.Lock()
 _cache_state: dict[str, Any] = {"path": "", "data": {}}
 _MANAGED_TAGS_ID3_DESC = "LOCAL_AI_TAGS"
 _MANAGED_COLLECTION_ID3_DESC = "LOCAL_AI_COLLECTION"
+_AUDIO_EXTENSIONS = {ext.lower() for ext in SUPPORTED_EXTENSIONS}
+_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
 
 
 def _parse_managed_tags(raw: Any) -> list[str]:
@@ -427,6 +429,75 @@ def move_track_to_album_folder(
     return plan
 
 
+def cleanup_stale_repairable_album_folders(
+    *,
+    music_dir: str,
+    target_album: str = "Singles",
+    dry_run: bool = False,
+) -> list[dict[str, str]]:
+    if is_missing_album(target_album):
+        return []
+
+    lib_root = Path(os.path.realpath(music_dir))
+    if not lib_root.is_dir():
+        return []
+
+    plans: list[dict[str, str]] = []
+    for artist_dir in sorted(lib_root.iterdir()):
+        if not artist_dir.is_dir():
+            continue
+        for album_dir in sorted(artist_dir.iterdir()):
+            if not album_dir.is_dir() or not is_repairable_source_album_folder(album_dir.name):
+                continue
+            if sanitize_component(album_dir.name) == sanitize_component(target_album):
+                continue
+
+            entries = list(album_dir.iterdir())
+            audio_files = [entry for entry in entries if entry.suffix.lower() in _AUDIO_EXTENSIONS]
+            if audio_files:
+                continue
+
+            movable_entries = [
+                entry
+                for entry in entries
+                if entry.is_file() and (entry.suffix.lower() in _IMAGE_EXTENSIONS or entry.name.lower() == "cover.jpg")
+            ]
+            if not movable_entries:
+                if not dry_run and not any(album_dir.iterdir()):
+                    try:
+                        album_dir.rmdir()
+                    except OSError:
+                        pass
+                continue
+
+            for entry in movable_entries:
+                destination = _safe_path(music_dir, artist_dir.name, target_album, entry.name)
+                destination = _resolve_duplicate(destination)
+                if destination == entry.resolve():
+                    continue
+                plan = {
+                    "from": str(entry),
+                    "to": str(destination),
+                    "artist": artist_dir.name,
+                    "album": target_album,
+                    "kind": "stale_folder_cleanup",
+                }
+                plans.append(plan)
+                if not dry_run:
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    _set_permissions(destination.parent)
+                    shutil.move(str(entry), str(destination))
+                    _set_permissions(destination)
+
+            if not dry_run and album_dir.is_dir() and not any(album_dir.iterdir()):
+                try:
+                    album_dir.rmdir()
+                except OSError:
+                    pass
+
+    return plans
+
+
 def enrich_library_batch(
     *,
     music_dir: str | None = None,
@@ -525,6 +596,15 @@ def enrich_library_batch(
             summary["errors"] += 1
 
     _save_cache(config.cache_path, cache)
+    if move_files or repair_managed_albums:
+        cleanup_plans = cleanup_stale_repairable_album_folders(
+            music_dir=lib_dir,
+            target_album="Singles",
+            dry_run=dry_run,
+        )
+        summary["move_plans"].extend(cleanup_plans)
+        if not dry_run:
+            summary["files_moved"] += sum(1 for plan in cleanup_plans if plan.get("kind") == "stale_folder_cleanup")
     if group_preview:
         summary["groups"] = groups
         summary["subgenres"] = subgenres

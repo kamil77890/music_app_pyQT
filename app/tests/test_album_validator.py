@@ -106,6 +106,121 @@ def test_fake_album_music_videos_gets_repaired_to_singles():
     assert collection == "Music Videos"
 
 
+def test_fake_album_ost_collection_gets_repaired_to_singles():
+    album, collection, _, _ = _resolve(
+        {"title": "Solo Leveling Episode 6 OST Piano", "artist": "Artist", "album": "OST Collection"},
+        genre="Soundtrack",
+        style="Piano",
+        tags=["OST"],
+    )
+
+    assert album == "Singles"
+    assert collection in {"OST Collection", "Anime Soundtracks"}
+
+
+def test_fake_album_piano_versions_gets_repaired_to_singles():
+    album, collection, _, _ = _resolve(
+        {"title": "Song Piano Version", "artist": "Artist", "album": "Piano Versions"},
+        genre="Unknown Genre",
+        style="Piano",
+    )
+
+    assert album == "Singles"
+    assert collection == "Piano Versions"
+
+
+def test_fake_album_classical_piano_gets_repaired_to_singles():
+    album, collection, _, _ = _resolve(
+        {"title": "Beethoven - Moonlight Sonata Piano", "artist": "Artist", "album": "Classical Piano"},
+        genre="Classical",
+        style="Piano",
+    )
+
+    assert album == "Singles"
+    assert collection == "Classical Piano"
+
+
+def test_unknown_album_folder_moves_to_singles(tmp_path):
+    from app.logic.local_ai.enrichment_service import move_track_to_album_folder
+
+    lib = tmp_path / "music"
+    unknown_album = lib / "Artist" / "Unknown Album"
+    unknown_album.mkdir(parents=True)
+    song = unknown_album / "01 - Song.mp3"
+    song.write_bytes(b"fake")
+
+    result = move_track_to_album_folder(
+        path=str(song),
+        artist="Artist",
+        target_album="Singles",
+        music_dir=str(lib),
+        dry_run=False,
+    )
+
+    assert result is not None
+    assert (lib / "Artist" / "Singles" / "01 - Song.mp3").exists()
+    assert not unknown_album.exists()
+
+
+def test_move_files_do_not_overwrite_existing_destination(tmp_path):
+    from app.logic.local_ai.enrichment_service import move_track_to_album_folder
+
+    lib = tmp_path / "music"
+    source_dir = lib / "Artist" / "Unknown Album"
+    dest_dir = lib / "Artist" / "Singles"
+    source_dir.mkdir(parents=True)
+    dest_dir.mkdir(parents=True)
+    source = source_dir / "01 - Song.mp3"
+    existing = dest_dir / "01 - Song.mp3"
+    source.write_bytes(b"source")
+    existing.write_bytes(b"existing")
+
+    result = move_track_to_album_folder(
+        path=str(source),
+        artist="Artist",
+        target_album="Singles",
+        music_dir=str(lib),
+        dry_run=False,
+    )
+
+    assert result is not None
+    assert result["to"].endswith("01 - Song (1).mp3")
+    assert existing.read_bytes() == b"existing"
+
+
+def test_move_files_block_path_traversal(tmp_path):
+    from app.logic.local_ai.enrichment_service import plan_track_album_move
+
+    lib = tmp_path / "music"
+    outside = tmp_path / "outside.mp3"
+    outside.write_bytes(b"fake")
+
+    assert plan_track_album_move(
+        path=str(outside),
+        artist="Artist",
+        target_album="Singles",
+        music_dir=str(lib),
+    ) is None
+
+
+def test_cleanup_stale_unknown_album_folder_moves_cover_and_removes_folder(tmp_path):
+    from app.logic.local_ai.enrichment_service import cleanup_stale_repairable_album_folders
+
+    lib = tmp_path / "music"
+    unknown_album = lib / "Kenke" / "Unknown Album"
+    singles = lib / "Kenke" / "Singles"
+    unknown_album.mkdir(parents=True)
+    singles.mkdir(parents=True)
+    cover = unknown_album / "cover.jpg"
+    cover.write_bytes(b"cover")
+
+    plans = cleanup_stale_repairable_album_folders(music_dir=str(lib), dry_run=False)
+
+    assert len(plans) == 1
+    assert (singles / "cover.jpg").exists()
+    assert not unknown_album.exists()
+
+
 def test_fake_album_anime_soundtracks_gets_repaired_to_singles():
     album, collection, _, _ = _resolve(
         {"title": "Tokyo Ghoul OP - Unravel", "artist": "Luminote", "album": "Anime Soundtracks"},
