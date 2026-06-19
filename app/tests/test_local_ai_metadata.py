@@ -201,7 +201,11 @@ def test_enrichment_batch_write_tags_writes_cleaned_metadata(monkeypatch, tmp_pa
         "scan_music_files",
         lambda music_dir=None: [{"path": str(track), "title": "rock anthem", "artist": "Band", "genre": "Rock", "videoId": "pzXMXGM21YI"}],
     )
-    monkeypatch.setattr(enrichment_service, "write_audio_metadata", lambda path, metadata: writes.append((path, metadata)))
+    monkeypatch.setattr(
+        enrichment_service,
+        "write_audio_metadata",
+        lambda path, metadata, **kwargs: writes.append((path, metadata)),
+    )
 
     summary = enrich_library_batch(music_dir=str(tmp_path), dry_run=False, write_tags=True)
 
@@ -229,6 +233,9 @@ def test_enrichment_batch_uses_cache_without_reclassifying(monkeypatch, tmp_path
         "collection": None,
         "mood": [],
         "tags": ["energetic"],
+        "album": "Singles",
+        "album_source": "fallback",
+        "album_confidence": 0.35,
         "metadata_quality": "high",
         "metadata_source": "local_ai",
         "classification_confidence": 0.8,
@@ -494,6 +501,8 @@ def test_enrich_track_metadata_same_result_twice_uses_cache(monkeypatch, tmp_pat
                 "title": track.get("title", ""),
                 "artist": track.get("artist", ""),
                 "album": track.get("album", ""),
+                "album_source": "fallback",
+                "album_confidence": 0.5,
                 "genre": "Rock",
                 "primary_genre": "Rock",
                 "style": None,

@@ -222,6 +222,8 @@ class TestLibrarySongsEndpoint:
         assert song["metadata_quality"] == "medium"
         assert song["metadata_source"] == "fallback"
         assert "reason" in song
+        assert "album_source" in song
+        assert "album_confidence" in song
 
     def test_library_songs_returns_same_enrichment_on_repeated_calls(self, monkeypatch, tmp_path):
         import app.endpoints.library_api as lib_api
@@ -252,6 +254,8 @@ class TestLibrarySongsEndpoint:
                     "title": track.get("title", ""),
                     "artist": track.get("artist", ""),
                     "album": track.get("album", ""),
+                    "album_source": "local_ai",
+                    "album_confidence": 0.5,
                     "genre": "Electronic",
                     "primary_genre": "Electronic",
                     "style": "Nightcore",

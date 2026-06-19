@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from app.logic.local_ai.album_validator import resolve_track_album
 from app.logic.local_ai.classifier_base import LocalMetadataClassifier
 from app.logic.local_ai.metadata_normalizer import (
     UNKNOWN_GENRE,
@@ -35,10 +36,19 @@ class FallbackClassifier(LocalMetadataClassifier):
             "genre": clean_genre,
         }
 
+        final_album, album_source, album_confidence = resolve_track_album(
+            track=track,
+            genre=clean_genre,
+            repair_managed_albums=bool(track.get("_repair_managed_albums")),
+        )
+        working["album"] = final_album
+
         return {
             "title": title,
             "artist": artist,
-            "album": album,
+            "album": final_album,
+            "album_source": album_source,
+            "album_confidence": album_confidence,
             "genre": clean_genre,
             "primary_genre": primary_genre,
             "style": None,
