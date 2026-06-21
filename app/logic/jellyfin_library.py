@@ -40,15 +40,48 @@ def _safe_path(library_path: str, artist: str, album: str, filename: str) -> Pat
     safe_name = sanitize_component(filename, max_len=220)
     raw = os.path.join(norm_lib, safe_artist, safe_album, safe_name)
     norm_final = os.path.normpath(raw)
-    if not norm_final.startswith(norm_lib + "/") and norm_final != norm_lib:
+    real_final = os.path.normpath(os.path.realpath(raw))
+    if os.path.commonpath([norm_lib, real_final]) != norm_lib:
         raise ValueError(
-            f"Path traversal blocked: {norm_final} is outside {norm_lib}"
+            f"Path traversal blocked: {real_final} is outside {norm_lib}"
         )
     return Path(norm_final)
 
 
+def _safe_incoming_path(library_path: str, artist: str, filename: str) -> Path:
+    norm_lib = os.path.normpath(os.path.realpath(library_path))
+    safe_artist = sanitize_component(artist)
+    safe_name = sanitize_component(filename, max_len=220)
+    raw = os.path.join(norm_lib, "_incoming", safe_artist, safe_name)
+    norm_final = os.path.normpath(raw)
+    real_final = os.path.normpath(os.path.realpath(raw))
+    if os.path.commonpath([norm_lib, real_final]) != norm_lib:
+        raise ValueError(
+            f"Path traversal blocked: {real_final} is outside {norm_lib}"
+        )
+    return Path(norm_final)
+
+
+def _validate_library_destination(library_path: str, path: Path) -> Path:
+    norm_lib = os.path.normpath(os.path.realpath(library_path))
+    norm_final = os.path.normpath(str(path))
+    real_final = os.path.normpath(os.path.realpath(path))
+    if os.path.commonpath([norm_lib, real_final]) != norm_lib:
+        raise ValueError(
+            f"Path traversal blocked: {real_final} is outside {norm_lib}"
+        )
+    current = Path(norm_lib)
+    for part in Path(norm_final).relative_to(norm_lib).parts[:-1]:
+        current = current / part
+        if current.is_symlink():
+            raise ValueError(
+                f"Path traversal blocked: {current} is a symlinked directory"
+            )
+    return Path(norm_final)
+
+
 def _resolve_duplicate(path: Path) -> Path:
-    if not path.exists():
+    if not path.exists() and not path.is_symlink():
         return path
     parent = path.parent
     stem = path.stem
@@ -56,7 +89,7 @@ def _resolve_duplicate(path: Path) -> Path:
     counter = 1
     while True:
         new = parent / f"{stem} ({counter}){ext}"
-        if not new.exists():
+        if not new.exists() and not new.is_symlink():
             return new
         counter += 1
 
@@ -284,7 +317,7 @@ def saveTrackToLibrary(
     lib_path = JellyfinConfig.get_music_library_path()
 
     artist = (metadata.get("artist") or "").strip() or "Unknown Artist"
-    album = (metadata.get("album") or "").strip() or "Unknown Album"
+    album = (metadata.get("album") or "").strip()
     title = (metadata.get("title") or "").strip()
     track_number = (metadata.get("trackNumber") or metadata.get("tracknumber") or "").strip()
     year = metadata.get("year")
@@ -301,8 +334,10 @@ def saveTrackToLibrary(
     track_number_str = str(track_number).zfill(2) if track_number else "00"
 
     safe_filename = f"{track_number_str} - {title}{ext}"
-    final_path = _safe_path(lib_path, artist, album, safe_filename)
+    has_real_album = bool(album) and album.lower() != "unknown album"
+    final_path = _safe_path(lib_path, artist, album, safe_filename) if has_real_album else _safe_incoming_path(lib_path, artist, safe_filename)
     final_path = _resolve_duplicate(final_path)
+    final_path = _validate_library_destination(lib_path, final_path)
     album_dir = final_path.parent
 
     try:
@@ -322,6 +357,7 @@ def saveTrackToLibrary(
         converted = _convert_with_ffmpeg(input_path_obj, output_format, JellyfinConfig.get_output_bitrate())
         if converted:
             final_path = _resolve_duplicate(album_dir / converted.name)
+            final_path = _validate_library_destination(lib_path, final_path)
             ext = converted.suffix.lower()
             input_for_copy = converted
         else:
@@ -361,7 +397,7 @@ def saveTrackToLibrary(
         final_path,
         title=title or None,
         artist=artist,
-        album=album if album != "Unknown Album" else None,
+        album=album if has_real_album else None,
         track_number=track_number_str,
         year=str(year) if year else None,
         genre=genre or None,

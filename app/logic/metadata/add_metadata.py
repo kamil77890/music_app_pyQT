@@ -120,13 +120,19 @@ def verify_metadata(file_path: str, format: str) -> dict:
         artist = "N/A"
         album = ""
         videoId = "N/A"
+        genre = ""
 
         if format.lower() == 'mp3':
             id3 = ID3(file_path)
             title = str(id3.get('TIT2', 'N/A'))
             artist = str(id3.get('TPE1', 'N/A'))
             album = str(id3.get('TALB', '')).strip()
-            videoId = str(id3.get('TCON', 'N/A'))
+            genre = str(id3.get('TCON', '')).strip()
+            custom_video_id = id3.get('TXXX:YOUTUBE_VIDEO_ID')
+            if custom_video_id and getattr(custom_video_id, 'text', None):
+                videoId = str(custom_video_id.text[0])
+            elif len(genre) == 11 and all(c.isalnum() or c in '_-' for c in genre):
+                videoId = genre
             cover_data = extract_cover_from_metadata(file_path, format, videoId)
             cover = cover_data.get("cover_url", "") or cover_data.get("cover_base64", "")
 
@@ -135,7 +141,13 @@ def verify_metadata(file_path: str, format: str) -> dict:
             title = audio.get('\xa9nam', ['N/A'])[0]
             artist = audio.get('\xa9ART', ['N/A'])[0]
             album = str(audio.get('\xa9alb', [''])[0]).strip()
-            videoId = audio.get('\xa9cmt', ['N/A'])[0]
+            genre = str(audio.get('\xa9gen', [''])[0]).strip()
+            custom_video_id = audio.get('----:com.apple.iTunes:YOUTUBE_VIDEO_ID', [])
+            if custom_video_id:
+                raw = custom_video_id[0]
+                videoId = raw.decode('utf-8') if isinstance(raw, bytes) else str(raw)
+            else:
+                videoId = audio.get('\xa9cmt', ['N/A'])[0]
             cover_data = extract_cover_from_metadata(file_path, format, videoId)
             cover = cover_data.get("cover_url", "") or cover_data.get("cover_base64", "")
 
@@ -143,6 +155,7 @@ def verify_metadata(file_path: str, format: str) -> dict:
             'title': title,
             'artist': artist,
             'album': album,
+            'genre': genre,
             'videoId': videoId,
             'cover': cover,
             'has_cover': bool(cover)

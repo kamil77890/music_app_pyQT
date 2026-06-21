@@ -120,8 +120,8 @@ def process_metadata(
 
     ``meta`` carries the metadata already extracted by yt-dlp
     (``title``/``artist``/``thumbnail``); when present no YouTube Data API call
-    is made. ``videoId`` is stored in the genre field (TCON / ©cmt) because the
-    rest of the app reads it back from there.
+    is made. ``videoId`` is stored in a dedicated custom metadata field, never
+    in TCON because TCON is the audio genre field.
     """
     meta = meta or {}
     try:
@@ -148,8 +148,10 @@ def process_metadata(
                 id3.delall("TPE1")
                 id3.add(TPE1(encoding=3, text=artist))
             if video_id:
-                id3.delall("TCON")
-                id3.add(TCON(encoding=3, text=video_id))
+                from mutagen.id3 import TXXX
+
+                id3.delall("TXXX:YOUTUBE_VIDEO_ID")
+                id3.add(TXXX(encoding=3, desc="YOUTUBE_VIDEO_ID", text=video_id))
             id3.save(file_path, v2_version=3, v1=2)
 
             # yt-dlp already embeds the thumbnail; only fetch as a fallback.
@@ -165,7 +167,7 @@ def process_metadata(
             if artist and artist != "Unknown Artist":
                 audio["\xa9ART"] = [artist]
             if video_id:
-                audio["\xa9cmt"] = [video_id]
+                audio["----:com.apple.iTunes:YOUTUBE_VIDEO_ID"] = [video_id.encode("utf-8")]
             audio.save()
 
             if "covr" not in MP4(file_path) and thumb_url:
@@ -249,7 +251,7 @@ def download_song(videoId: str, id: str = "0", format_ext: str = "mp3", base_pat
         jellyfin_meta = {
             "title": track.get("title", final_name),
             "artist": track.get("artist", "Unknown Artist"),
-            "album": track.get("album") or "Unknown Album",
+            "album": track.get("album") or "",
             "trackNumber": track.get("track_number") or "00",
             "year": track.get("release_year"),
             "genre": track.get("genre") or "",
@@ -356,7 +358,7 @@ def download_playlist(playlistId: str, audio_format: str = "mp3") -> str:
             jellyfin_meta = {
                 "title": track.get("title", basename),
                 "artist": track.get("artist", "Unknown Artist"),
-                "album": track.get("album") or "Unknown Album",
+                "album": track.get("album") or "",
                 "trackNumber": track.get("track_number") or "00",
                 "year": track.get("release_year"),
                 "genre": track.get("genre") or "",

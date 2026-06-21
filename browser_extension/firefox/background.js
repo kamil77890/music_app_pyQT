@@ -20,7 +20,7 @@ function updateBadge() {
     browser.browserAction.setTitle({ title: "Backend offline \u2014 start music_app_pyQT", ...opts }).catch(() => {});
     return;
   }
-  const isYT = currentTabInfo.isYouTube;
+  const isYT = currentYouTubeTab.isYouTube;
   if (isYT) {
     browser.browserAction.setBadgeText({ text: "YT", ...opts }).catch(() => {});
     browser.browserAction.setBadgeBackgroundColor({ color: "#26a69a", ...opts }).catch(() => {});
@@ -101,6 +101,15 @@ browser.runtime.onMessage.addListener(async (msg, sender) => {
     case "GET_LIBRARY": {
       try {
         const data = await listSongs(msg.q || "");
+        return { ok: true, data };
+      } catch (err) {
+        return { ok: false, error: err.message };
+      }
+    }
+
+    case "GET_LIBRARY_GROUPS": {
+      try {
+        const data = await listLibraryGroups();
         return { ok: true, data };
       } catch (err) {
         return { ok: false, error: err.message };

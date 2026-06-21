@@ -1,6 +1,7 @@
 import logging
 import os
 import re
+from collections import defaultdict
 
 from fastapi import APIRouter, Body, HTTPException, Query
 from fastapi.concurrency import run_in_threadpool
@@ -9,6 +10,9 @@ from fastapi.responses import JSONResponse, FileResponse
 from app.config.jellyfin_config import JellyfinConfig
 from app.endpoints.api_errors import api_error
 from app.logic.library_scanner import scan_music_files
+from app.logic.local_ai.album_group_registry import load_registry, registry_group_for_track
+from app.logic.local_ai.config import get_config
+from app.logic.local_ai.enrichment_service import enrich_track_metadata, read_library_layout_metadata, _load_cache, _track_cache_key
 from app.logic.ultimate_downloader import download_song, extract_video_id
 
 _YT_VIDEO_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{11}$")
@@ -30,6 +34,85 @@ def _download_error_code(exc: HTTPException) -> str:
     if exc.status_code == 422 or "without an audio file" in detail or "file not created" in detail:
         return "NO_OUTPUT_FILE"
     return "INTERNAL_ERROR"
+
+
+def _sort_text(value: str) -> tuple[str, str]:
+    return (value.lower(), value)
+
+
+def _group_from_saved_entry(entry: dict | None) -> str:
+    if not isinstance(entry, dict):
+        return ""
+    for key in ("library_group", "managed_library_group", "LOCAL_AI_LIBRARY_GROUP", "group_name"):
+        value = str(entry.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _saved_library_group(song: dict, *, cache: dict | None = None, registry: dict | None = None) -> str:
+    for key in ("library_group", "managed_library_group"):
+        value = str(song.get(key) or "").strip()
+        if value:
+            return value
+
+    cache_group = _group_from_saved_entry((cache or {}).get(_track_cache_key(song)))
+    if cache_group:
+        return cache_group
+
+    registry_group = registry_group_for_track(registry or {}, _track_cache_key(song))
+    registry_value = _group_from_saved_entry(registry_group)
+    if registry_value:
+        return registry_value
+
+    path = str(song.get("path") or "")
+    if path and os.path.isfile(path):
+        file_meta = read_library_layout_metadata(path)
+        value = str(file_meta.get("library_group") or "").strip()
+        if value:
+            return value
+
+    lib_path = JellyfinConfig.get_music_library_path()
+    norm_lib = os.path.normpath(os.path.realpath(lib_path))
+    norm_path = os.path.normpath(os.path.realpath(path)) if path else ""
+    if norm_path and os.path.commonpath([norm_lib, norm_path]) == norm_lib:
+        rel = os.path.relpath(norm_path, norm_lib).split(os.sep)
+        if rel and rel[0] and rel[0] != "_incoming":
+            return rel[0]
+    return "Ungrouped"
+
+
+def build_library_groups_response(songs: list[dict]) -> dict:
+    grouped: dict[str, dict[str, dict]] = defaultdict(dict)
+    covers: dict[str, str] = {}
+    config = get_config()
+    cache = _load_cache(config.cache_path)
+    registry = load_registry(config.album_groups_registry_path)
+    for song in songs:
+        group = _saved_library_group(song, cache=cache, registry=registry)
+        artist = str(song.get("artist") or "Unknown Artist").strip() or "Unknown Artist"
+        artist_node = grouped[group].setdefault(artist, {"name": artist, "track_count": 0, "tracks": []})
+        artist_node["track_count"] += 1
+        artist_node["tracks"].append(song)
+        if group not in covers and song.get("cover"):
+            covers[group] = str(song["cover"])
+
+    groups = []
+    for group_name in sorted(grouped, key=_sort_text):
+        artists = []
+        for artist_name in sorted(grouped[group_name], key=_sort_text):
+            node = grouped[group_name][artist_name]
+            node["tracks"] = sorted(
+                node["tracks"],
+                key=lambda item: (
+                    str(item.get("title") or "").lower(),
+                    str(item.get("title") or ""),
+                    str(item.get("path") or ""),
+                ),
+            )
+            artists.append(node)
+        groups.append({"name": group_name, "cover": covers.get(group_name, ""), "artists": artists})
+    return {"groups": groups}
 
 
 @router.get("/health")
@@ -87,26 +170,35 @@ async def library_songs(
     if not os.path.isdir(lib_path):
         return {"songs": [], "total": 0, "library_path": lib_path}
 
-    songs = scan_music_files(lib_path)
-    songs.sort(key=lambda s: s.get("title", "").lower())
+    scanned = scan_music_files(lib_path)
+    scanned.sort(key=lambda s: s.get("title", "").lower())
 
     if q:
         ql = q.lower()
-        songs = [
-            s for s in songs
+        scanned = [
+            s for s in scanned
             if ql in s.get("title", "").lower()
             or ql in s.get("artist", "").lower()
             or ql in s.get("album", "").lower()
         ]
 
-    total = len(songs)
-    songs = songs[:limit]
+    total = len(scanned)
+    songs = [enrich_track_metadata(song) for song in scanned[:limit]]
 
     return {
         "songs": songs,
         "total": total,
         "library_path": lib_path,
     }
+
+
+@router.get("/library/groups")
+async def library_groups():
+    lib_path = JellyfinConfig.get_music_library_path()
+    if not os.path.isdir(lib_path):
+        return {"groups": [], "library_path": lib_path}
+    songs = scan_music_files(lib_path)
+    return {**build_library_groups_response(songs), "library_path": lib_path}
 
 
 @router.get("/library/stream")

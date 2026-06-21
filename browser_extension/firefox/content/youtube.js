@@ -499,10 +499,6 @@
   // --- Download ---
   async function handleClick() {
     if (state.isSaving) return;
-    if (!state.backendOnline) {
-      showToast("Backend offline \u2014 start music_app_pyQT", true);
-      return;
-    }
     const vid = getVideoId();
     if (!vid) {
       showToast("No YouTube video detected", true);
