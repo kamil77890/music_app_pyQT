@@ -136,7 +136,7 @@ class TestUnknownFallback:
             {"title": "Test Song"},
         )
         assert "Unknown Artist" in result
-        assert "Unknown Album" in result
+        assert "_incoming" in result
 
     def test_unknown_album_in_metadata(self, tmp_path, monkeypatch):
         monkeypatch.setenv("MUSIC_LIBRARY_PATH", str(tmp_path / "music"))
@@ -149,7 +149,7 @@ class TestUnknownFallback:
             {"title": "Test", "artist": "Test Artist"},
         )
         assert "Test Artist" in result
-        assert "Unknown Album" in result
+        assert "_incoming" in result
 
 
 class TestFormatAndStructure:

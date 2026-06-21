@@ -251,7 +251,7 @@ def download_song(videoId: str, id: str = "0", format_ext: str = "mp3", base_pat
         jellyfin_meta = {
             "title": track.get("title", final_name),
             "artist": track.get("artist", "Unknown Artist"),
-            "album": track.get("album") or "Unknown Album",
+            "album": track.get("album") or "",
             "trackNumber": track.get("track_number") or "00",
             "year": track.get("release_year"),
             "genre": track.get("genre") or "",
@@ -358,7 +358,7 @@ def download_playlist(playlistId: str, audio_format: str = "mp3") -> str:
             jellyfin_meta = {
                 "title": track.get("title", basename),
                 "artist": track.get("artist", "Unknown Artist"),
-                "album": track.get("album") or "Unknown Album",
+                "album": track.get("album") or "",
                 "trackNumber": track.get("track_number") or "00",
                 "year": track.get("release_year"),
                 "genre": track.get("genre") or "",

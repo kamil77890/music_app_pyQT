@@ -40,3 +40,26 @@ def test_sidebar_html_has_dynamic_filter_container_only():
     assert 'id="library-filters"' in source
     for label in ["Piano", "Nightcore", "Anime", "Electronic", "Rock", "Unknown"]:
         assert f'data-filter="{label}"' not in source
+
+
+def test_sidebar_uses_library_groups_endpoint():
+    api_js = (ROOT / "browser_extension" / "firefox" / "shared" / "api.js").read_text(encoding="utf-8")
+    background_js = (ROOT / "browser_extension" / "firefox" / "background.js").read_text(encoding="utf-8")
+    sidebar_js = (ROOT / "browser_extension" / "firefox" / "sidebar" / "sidebar.js").read_text(encoding="utf-8")
+    sidebar_html = (ROOT / "browser_extension" / "firefox" / "sidebar" / "sidebar.html").read_text(encoding="utf-8")
+
+    assert "/api/library/groups" in api_js
+    assert "listLibraryGroups" in api_js
+    assert "GET_LIBRARY_GROUPS" in background_js
+    assert "GET_LIBRARY_GROUPS" in sidebar_js
+    assert "group-breadcrumb" in sidebar_html
+    assert "group-list" in sidebar_html
+
+
+def test_sidebar_group_view_owns_default_song_list_rendering():
+    sidebar_js = (ROOT / "browser_extension" / "firefox" / "sidebar" / "sidebar.js").read_text(encoding="utf-8")
+
+    assert "const showSearchResults = Boolean(query);" in sidebar_js
+    assert "if (showSearchResults || !groupList)" in sidebar_js
+    assert "if (!query) loadLibraryGroups();" in sidebar_js
+    assert "groupBreadcrumb.textContent = showSearchResults ? \"Search Results\" : \"Library\"" in sidebar_js

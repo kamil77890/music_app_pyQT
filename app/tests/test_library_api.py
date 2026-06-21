@@ -1,4 +1,5 @@
 import os
+import json
 from unittest.mock import patch
 
 import pytest
@@ -286,6 +287,178 @@ class TestLibrarySongsEndpoint:
 
         assert first["songs"] == second["songs"]
         assert calls["count"] == 1
+
+
+class TestLibraryGroupsEndpoint:
+    def test_library_groups_uses_saved_fields_without_enrichment(self, monkeypatch, tmp_path):
+        import app.endpoints.library_api as lib_api
+
+        music = tmp_path / "music"
+        music.mkdir(parents=True)
+        song = {
+            "title": "Nightcore - A",
+            "artist": "Kenke",
+            "album": "",
+            "path": str(music / "Nightcore" / "Kenke" / "a.mp3"),
+            "cover": "cover-url",
+            "library_group": "Nightcore",
+            "managed_library_group": "Nightcore",
+        }
+        monkeypatch.setenv(LIBRARY_PATH_VAR, str(music))
+        monkeypatch.setattr(lib_api, "scan_music_files", lambda _path: [song])
+
+        def fail_enrich(*args, **kwargs):
+            raise AssertionError("enrichment must not run")
+
+        monkeypatch.setattr(lib_api, "enrich_track_metadata", fail_enrich)
+
+        resp = client.get("/api/library/groups")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["groups"][0]["name"] == "Nightcore"
+        assert data["groups"][0]["cover"] == "cover-url"
+        assert data["groups"][0]["artists"][0]["name"] == "Kenke"
+        assert data["groups"][0]["artists"][0]["track_count"] == 1
+
+    def test_library_groups_falls_back_to_existing_group_path(self, monkeypatch, tmp_path):
+        import app.endpoints.library_api as lib_api
+
+        music = tmp_path / "music"
+        music.mkdir(parents=True)
+        song = {
+            "title": "Song",
+            "artist": "Artist",
+            "path": str(music / "Electronic" / "Artist" / "00 - Song.mp3"),
+        }
+        monkeypatch.setenv(LIBRARY_PATH_VAR, str(music))
+        monkeypatch.setattr(lib_api, "scan_music_files", lambda _path: [song])
+        monkeypatch.setattr(lib_api, "enrich_track_metadata", lambda *args, **kwargs: pytest.fail("enrichment must not run"))
+
+        resp = client.get("/api/library/groups")
+
+        assert resp.status_code == 200
+        assert resp.json()["groups"][0]["name"] == "Electronic"
+
+    def test_library_groups_treats_incoming_as_ungrouped(self, monkeypatch, tmp_path):
+        import app.endpoints.library_api as lib_api
+
+        music = tmp_path / "music"
+        music.mkdir(parents=True)
+        song = {
+            "title": "Song",
+            "artist": "Artist",
+            "path": str(music / "_incoming" / "Artist" / "00 - Song.mp3"),
+        }
+        monkeypatch.setenv(LIBRARY_PATH_VAR, str(music))
+        monkeypatch.setattr(lib_api, "scan_music_files", lambda _path: [song])
+        monkeypatch.setattr(lib_api, "enrich_track_metadata", lambda *args, **kwargs: pytest.fail("enrichment must not run"))
+
+        resp = client.get("/api/library/groups")
+
+        assert resp.status_code == 200
+        assert resp.json()["groups"][0]["name"] == "Ungrouped"
+
+    def test_library_groups_reads_saved_file_metadata(self, monkeypatch, tmp_path):
+        import app.endpoints.library_api as lib_api
+
+        music = tmp_path / "music"
+        music.mkdir(parents=True)
+        song_path = music / "_incoming" / "Artist" / "00 - Song.mp3"
+        song_path.parent.mkdir(parents=True)
+        song_path.write_bytes(b"audio")
+        song = {"title": "Song", "artist": "Artist", "path": str(song_path)}
+        monkeypatch.setenv(LIBRARY_PATH_VAR, str(music))
+        monkeypatch.setattr(lib_api, "scan_music_files", lambda _path: [song])
+        monkeypatch.setattr(lib_api, "read_library_layout_metadata", lambda _path: {"library_group": "Nightcore"})
+        monkeypatch.setattr(lib_api, "enrich_track_metadata", lambda *args, **kwargs: pytest.fail("enrichment must not run"))
+
+        resp = client.get("/api/library/groups")
+
+        assert resp.status_code == 200
+        assert resp.json()["groups"][0]["name"] == "Nightcore"
+
+    def test_library_groups_uses_saved_cache_group(self, monkeypatch, tmp_path):
+        import app.endpoints.library_api as lib_api
+
+        music = tmp_path / "music"
+        music.mkdir(parents=True)
+        cache_path = tmp_path / "cache.json"
+        song = {
+            "title": "Song",
+            "artist": "Artist",
+            "path": str(music / "_incoming" / "Artist" / "00 - Song.mp3"),
+            "fileMtime": 1,
+            "fileSize": 2,
+        }
+        cache_path.write_text(
+            json.dumps({f"{song['path']}|1|2": {"library_group": "Cached Group"}}),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv(LIBRARY_PATH_VAR, str(music))
+        monkeypatch.setenv("LOCAL_AI_CACHE_PATH", str(cache_path))
+        monkeypatch.setattr(lib_api, "scan_music_files", lambda _path: [song])
+        monkeypatch.setattr(lib_api, "enrich_track_metadata", lambda *args, **kwargs: pytest.fail("enrichment must not run"))
+
+        resp = client.get("/api/library/groups")
+
+        assert resp.status_code == 200
+        assert resp.json()["groups"][0]["name"] == "Cached Group"
+
+    def test_library_groups_uses_saved_registry_group(self, monkeypatch, tmp_path):
+        import app.endpoints.library_api as lib_api
+
+        music = tmp_path / "music"
+        music.mkdir(parents=True)
+        registry_path = tmp_path / "registry.json"
+        song = {
+            "title": "Song",
+            "artist": "Artist",
+            "path": str(music / "_incoming" / "Artist" / "00 - Song.mp3"),
+            "fileMtime": 1,
+            "fileSize": 2,
+        }
+        registry_path.write_text(
+            json.dumps(
+                {
+                    "groups": {"gid": {"group_name": "Registry Group"}},
+                    "track_assignments": {f"{song['path']}|1|2": "gid"},
+                }
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv(LIBRARY_PATH_VAR, str(music))
+        monkeypatch.setenv("LOCAL_AI_ALBUM_GROUPS_PATH", str(registry_path))
+        monkeypatch.setattr(lib_api, "scan_music_files", lambda _path: [song])
+        monkeypatch.setattr(lib_api, "enrich_track_metadata", lambda *args, **kwargs: pytest.fail("enrichment must not run"))
+
+        resp = client.get("/api/library/groups")
+
+        assert resp.status_code == 200
+        assert resp.json()["groups"][0]["name"] == "Registry Group"
+
+    def test_library_groups_orders_case_ties_and_tracks_deterministically(self, monkeypatch, tmp_path):
+        import app.endpoints.library_api as lib_api
+
+        music = tmp_path / "music"
+        music.mkdir(parents=True)
+        songs = [
+            {"title": "Same", "artist": "beta", "path": str(music / "rock" / "beta" / "b.mp3"), "library_group": "rock"},
+            {"title": "Same", "artist": "Beta", "path": str(music / "rock" / "Beta" / "a.mp3"), "library_group": "rock"},
+            {"title": "Song", "artist": "Artist", "path": str(music / "Rock" / "Artist" / "song.mp3"), "library_group": "Rock"},
+        ]
+        monkeypatch.setenv(LIBRARY_PATH_VAR, str(music))
+        monkeypatch.setattr(lib_api, "scan_music_files", lambda _path: songs)
+        monkeypatch.setattr(lib_api, "enrich_track_metadata", lambda *args, **kwargs: pytest.fail("enrichment must not run"))
+
+        resp = client.get("/api/library/groups")
+
+        assert resp.status_code == 200
+        groups = resp.json()["groups"]
+        assert [group["name"] for group in groups] == ["Rock", "rock"]
+        rock_artists = groups[1]["artists"]
+        assert [artist["name"] for artist in rock_artists] == ["Beta", "beta"]
+        assert [track["path"] for track in rock_artists[0]["tracks"]] == [str(music / "rock" / "Beta" / "a.mp3")]
 
 
 class TestLibraryStreamEndpoint:

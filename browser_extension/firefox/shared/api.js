@@ -43,6 +43,11 @@ async function listSongs(q, limit = 200) {
   return data;
 }
 
+async function listLibraryGroups() {
+  const data = await _json(`${API_BASE}/api/library/groups`, { method: "GET" });
+  return data;
+}
+
 function getStreamUrl(song) {
   const filePath = song.path || song.jellyfin_path || "";
   if (!filePath) return null;

@@ -11,12 +11,17 @@
   const statusIcon = $("status-icon");
   const statusText = $("status-text");
   const libraryStatus = $("library-status");
+  const groupBreadcrumb = $("group-breadcrumb");
+  const groupList = $("group-list");
   const songList = $("song-list");
   const audioPlayer = $("audio-player");
   const playerSection = $("player-section");
   const playerTitle = $("player-title");
 
   let allSongs = [];
+  let libraryGroups = [];
+  let selectedGroup = null;
+  let selectedArtist = null;
   let activeFilter = "All";
   let tabInfo = null;
   let pollingTimer = null;
@@ -108,21 +113,93 @@
   }
 
   // --- Library ---
+  function showLibraryError(err) {
+    const message = "Error: " + (err && err.message ? err.message : String(err));
+    if (libraryStatus) {
+      libraryStatus.textContent = message;
+    } else {
+      setStatus("failed", message);
+    }
+  }
+
   async function loadLibrary(q) {
+    const query = (q || "").trim();
+    const showSearchResults = Boolean(query);
     songList.innerHTML = "";
     $("empty-state").style.display = "none";
     try {
-      const resp = await browser.runtime.sendMessage({ type: "GET_LIBRARY", q: q || "" });
+      const resp = await browser.runtime.sendMessage({ type: "GET_LIBRARY", q: query });
       if (!resp.ok) throw new Error(resp.error);
       allSongs = resp.data.songs || [];
       renderDynamicFilters(allSongs);
       const visibleSongs = filterSongs(allSongs);
-      renderSongs(visibleSongs);
-      if (visibleSongs.length === 0) {
-        $("empty-state").style.display = "flex";
+      if (showSearchResults || !groupList) {
+        selectedGroup = null;
+        selectedArtist = null;
+        if (groupList) groupList.innerHTML = "";
+        if (groupBreadcrumb) groupBreadcrumb.textContent = showSearchResults ? "Search Results" : "Library";
+        renderSongs(visibleSongs);
+        if (visibleSongs.length === 0) {
+          $("empty-state").style.display = "flex";
+        }
       }
     } catch (err) {
-      libraryStatus.textContent = "Error: " + err.message;
+      showLibraryError(err);
+    }
+  }
+
+  async function loadLibraryGroups() {
+    if (!groupList) return;
+    try {
+      const resp = await browser.runtime.sendMessage({ type: "GET_LIBRARY_GROUPS" });
+      if (!resp.ok) throw new Error(resp.error);
+      libraryGroups = resp.data.groups || [];
+      selectedGroup = null;
+      selectedArtist = null;
+      renderLibraryGroups();
+    } catch (err) {
+      showLibraryError(err);
+    }
+  }
+
+  function renderLibraryGroups() {
+    if (!groupList) return;
+    groupList.innerHTML = "";
+    songList.innerHTML = "";
+    $("empty-state").style.display = "none";
+
+    if (groupBreadcrumb) {
+      const parts = ["Library Groups"];
+      if (selectedGroup) parts.push(selectedGroup.name || "Group");
+      if (selectedArtist) parts.push(selectedArtist.name || "Artist");
+      groupBreadcrumb.textContent = parts.join(" / ");
+      groupBreadcrumb.title = selectedGroup ? "Back to library groups" : "Library Groups";
+    }
+
+    if (selectedArtist) {
+      renderSongs(selectedArtist.tracks || []);
+      return;
+    }
+
+    const items = selectedGroup ? (selectedGroup.artists || []) : libraryGroups;
+    for (const item of items) {
+      const li = document.createElement("li");
+      li.className = "group-item";
+      li.textContent = selectedGroup ? `${item.name} (${item.track_count || 0})` : (item.name || "Ungrouped");
+      li.addEventListener("click", () => {
+        if (!selectedGroup) {
+          selectedGroup = item;
+          selectedArtist = null;
+        } else {
+          selectedArtist = item;
+        }
+        renderLibraryGroups();
+      });
+      groupList.appendChild(li);
+    }
+
+    if (items.length === 0) {
+      $("empty-state").style.display = "flex";
     }
   }
 
@@ -133,6 +210,7 @@
         song.primary_genre,
         song.style,
         song.subgenre,
+        song.collection,
         ...(song.tags || []),
       ];
       for (const value of candidates) {
@@ -189,7 +267,7 @@
       const info = document.createElement("div");
       info.className = "song-info";
       const genre = song.primary_genre || song.genre || "Unknown Genre";
-      const badges = [song.style, song.subgenre].filter(Boolean);
+      const badges = [song.style, song.subgenre, song.collection].filter(Boolean);
       const chips = [...badges, ...(song.tags || []).slice(0, 4), ...(song.mood || []).slice(0, 2)];
       info.innerHTML = `
         <div class="song-title">${esc(song.title || "Unknown")}</div>
@@ -224,6 +302,7 @@
         song.genre,
         song.style,
         song.subgenre,
+        song.collection,
         ...(song.tags || []),
       ].filter(Boolean).map(value => String(value).toLowerCase());
       return values.some(value => value === needle || value.includes(needle));
@@ -264,7 +343,9 @@
       if (result && result.ok) {
         const title = result.title || "";
         setStatus("saved", title ? `Saved: ${title}` : "Saved to Jellyfin");
-        loadLibrary($("input-search").value);
+        const query = $("input-search").value.trim();
+        loadLibrary(query);
+        if (!query) loadLibraryGroups();
       } else {
         const errMsg = getErrorMessage(result?.error || "unknown error");
         setStatus("failed", errMsg);
@@ -283,6 +364,7 @@
     checkStatus();
     fetchTabInfo();
     loadLibrary();
+    loadLibraryGroups();
 
     // Listen for live tab updates from background
     browser.runtime.onMessage.addListener((msg) => {
@@ -298,8 +380,10 @@
   }
 
   $("btn-refresh").addEventListener("click", () => {
+    const query = $("input-search").value.trim();
     checkStatus();
-    loadLibrary($("input-search").value);
+    loadLibrary(query);
+    if (!query) loadLibraryGroups();
     fetchTabInfo();
     setStatus("idle", "Idle");
   });
@@ -322,8 +406,24 @@
   let searchTimer = null;
   $("input-search").addEventListener("input", () => {
     clearTimeout(searchTimer);
-    searchTimer = setTimeout(() => loadLibrary($("input-search").value), 300);
+    searchTimer = setTimeout(() => {
+      const query = $("input-search").value.trim();
+      if (query) {
+        loadLibrary(query);
+      } else {
+        loadLibrary();
+        loadLibraryGroups();
+      }
+    }, 300);
   });
+
+  if (groupBreadcrumb) {
+    groupBreadcrumb.addEventListener("click", () => {
+      selectedGroup = null;
+      selectedArtist = null;
+      renderLibraryGroups();
+    });
+  }
 
   $("btn-player-close").addEventListener("click", () => {
     audioPlayer.pause();

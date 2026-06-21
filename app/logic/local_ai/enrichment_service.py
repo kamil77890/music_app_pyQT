@@ -31,6 +31,7 @@ from app.logic.local_ai.ollama_classifier import OllamaClassifier
 _cache_lock = threading.Lock()
 _cache_state: dict[str, Any] = {"path": "", "data": {}}
 _MANAGED_TAGS_ID3_DESC = "LOCAL_AI_TAGS"
+_MANAGED_LIBRARY_GROUP_ID3_DESC = "LOCAL_AI_LIBRARY_GROUP"
 _MANAGED_COLLECTION_ID3_DESC = "LOCAL_AI_COLLECTION"
 _MANAGED_ALBUM_KIND_ID3_DESC = "LOCAL_AI_ALBUM_KIND"
 _MANAGED_GROUP_ID_ID3_DESC = "LOCAL_AI_GROUP_ID"
@@ -450,6 +451,93 @@ def write_audio_metadata(path: str, metadata: dict[str, Any], *, write_album: bo
         if video_id:
             audio["----:com.apple.iTunes:YOUTUBE_VIDEO_ID"] = [video_id.encode("utf-8")]
         audio.save()
+
+
+def write_library_layout_metadata(path: str, metadata: dict[str, Any]) -> list[str]:
+    ext = os.path.splitext(path)[1].lower()
+    values = {
+        _MANAGED_LIBRARY_GROUP_ID3_DESC: str(metadata.get("library_group") or "").strip(),
+        _MANAGED_GROUP_ID_ID3_DESC: str(metadata.get("group_id") or "").strip(),
+        _MANAGED_COLLECTION_ID3_DESC: str(metadata.get("collection") or "").strip(),
+    }
+    written: list[str] = []
+
+    if ext == ".mp3":
+        from mutagen.id3 import ID3, ID3NoHeaderError, TXXX
+
+        try:
+            id3 = ID3(path)
+        except ID3NoHeaderError:
+            id3 = ID3()
+        for desc, value in values.items():
+            id3.delall(f"TXXX:{desc}")
+            if value:
+                id3.add(TXXX(encoding=3, desc=desc, text=value))
+                written.append(desc)
+        id3.save(path, v2_version=3, v1=2)
+    elif ext in (".m4a", ".mp4"):
+        from mutagen.mp4 import MP4, MP4StreamInfoError
+
+        try:
+            audio = MP4(path)
+        except MP4StreamInfoError:
+            return written
+        for desc, value in values.items():
+            key = f"----:com.apple.iTunes:{desc}"
+            if key in audio:
+                del audio[key]
+            if value:
+                audio[key] = [value.encode("utf-8")]
+                written.append(desc)
+        audio.save()
+    return written
+
+
+def read_library_layout_metadata(path: str) -> dict[str, str]:
+    ext = os.path.splitext(path)[1].lower()
+    out: dict[str, str] = {
+        "library_group": "",
+        "group_id": "",
+        "collection": "",
+    }
+
+    if ext == ".mp3":
+        from mutagen.id3 import ID3, ID3NoHeaderError
+
+        try:
+            id3 = ID3(path)
+        except ID3NoHeaderError:
+            return out
+        for desc in (_MANAGED_LIBRARY_GROUP_ID3_DESC, _MANAGED_GROUP_ID_ID3_DESC, _MANAGED_COLLECTION_ID3_DESC):
+            tag = id3.get(f"TXXX:{desc}")
+            if tag:
+                value = str(tag.text[0]).strip()
+                if desc == _MANAGED_LIBRARY_GROUP_ID3_DESC:
+                    out["library_group"] = value
+                elif desc == _MANAGED_GROUP_ID_ID3_DESC:
+                    out["group_id"] = value
+                elif desc == _MANAGED_COLLECTION_ID3_DESC:
+                    out["collection"] = value
+    elif ext in (".m4a", ".mp4"):
+        from mutagen.mp4 import MP4, MP4StreamInfoError
+
+        try:
+            audio = MP4(path)
+        except MP4StreamInfoError:
+            return out
+        for desc in (_MANAGED_LIBRARY_GROUP_ID3_DESC, _MANAGED_GROUP_ID_ID3_DESC, _MANAGED_COLLECTION_ID3_DESC):
+            key = f"----:com.apple.iTunes:{desc}"
+            raw_list = audio.get(key)
+            if raw_list:
+                raw = raw_list[0]
+                value = raw.decode("utf-8") if isinstance(raw, bytes) else str(raw).strip()
+                if desc == _MANAGED_LIBRARY_GROUP_ID3_DESC:
+                    out["library_group"] = value
+                elif desc == _MANAGED_GROUP_ID_ID3_DESC:
+                    out["group_id"] = value
+                elif desc == _MANAGED_COLLECTION_ID3_DESC:
+                    out["collection"] = value
+    return out
 
 
 def plan_track_album_move(

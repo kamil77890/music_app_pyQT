@@ -30,7 +30,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--repair-album-folders", action="store_true", help="Alias for --repair-managed-albums; repair legacy album folders.")
     parser.add_argument("--plan-album-groups", action="store_true", help="Show AI album group plan and move plans without writing or moving files.")
     parser.add_argument("--rebuild-album-groups", action="store_true", help="Ignore existing album group registry and rebuild the group plan.")
-    parser.add_argument("--move-files", action="store_true", help="Move files from legacy album folders into AI group folders.")
+    parser.add_argument("--move-files", action="store_true", help="Move files only by applying a saved library layout plan (requires --apply-library-layout).")
+    parser.add_argument("--plan-library-layout", action="store_true", help="Show library layout group plan without writing or moving files (read-only).")
+    parser.add_argument("--apply-library-layout", type=str, default=None, metavar="PLAN_ID", help="Apply a previously saved library layout plan by ID.")
     parser.add_argument("--group-preview", action="store_true", help="Print grouped classification summary.")
     parser.add_argument("--jellyfin-check", action="store_true", help="Run read-only Jellyfin metadata diagnostics.")
     parser.add_argument("--use-local-ai", action="store_true", help="Enable local AI classification for this run.")
@@ -55,8 +57,52 @@ def run_jellyfin_check() -> dict:
     return {"enabled": True, "message": jf.get("message"), "jellyfin_items": len(items), "matched": matched, "differences": differences}
 
 
+def _run_library_layout_plan(args: argparse.Namespace) -> int:
+    from app.logic.local_ai.config import get_config
+    from app.logic.local_ai.library_layout_planner import format_layout_plan_tree, plan_library_layout, save_layout_plan
+
+    lib_dir = JellyfinConfig.get_music_library_path()
+    config = get_config()
+    songs = scan_music_files(lib_dir)
+    if args.limit:
+        songs = songs[: args.limit]
+    plan = plan_library_layout(songs, music_dir=lib_dir, config=config)
+    saved_path = save_layout_plan(plan)
+    output = {"plan_id": plan["plan_id"], "saved_to": str(saved_path)}
+    print(json.dumps(output, ensure_ascii=False, indent=2))
+    print()
+    print(format_layout_plan_tree(plan))
+    return 0
+
+
+def _run_library_layout_apply(plan_id: str) -> int:
+    from app.logic.local_ai.library_layout_planner import apply_library_layout_plan
+
+    result = apply_library_layout_plan(
+        plan_id,
+        current_music_dir=JellyfinConfig.get_music_library_path(),
+    )
+    print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
+    return 0 if result.get("errors", 0) == 0 else 1
+
+
 def main() -> int:
     args = parse_args()
+
+    if args.move_files and not args.apply_library_layout:
+        print(
+            "ERROR: --move-files requires --apply-library-layout <PLAN_ID>.\n"
+            "  Use --plan-library-layout to generate a plan first, then --apply-library-layout <PLAN_ID>.",
+            file=sys.stderr,
+        )
+        return 1
+
+    if args.plan_library_layout:
+        return _run_library_layout_plan(args)
+
+    if args.apply_library_layout:
+        return _run_library_layout_apply(args.apply_library_layout)
+
     if args.use_local_ai:
         os.environ["LOCAL_AI_METADATA_ENABLED"] = "true"
     will_write = args.write_tags or args.write_albums

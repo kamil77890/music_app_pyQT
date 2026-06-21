@@ -107,6 +107,15 @@ browser.runtime.onMessage.addListener(async (msg, sender) => {
       }
     }
 
+    case "GET_LIBRARY_GROUPS": {
+      try {
+        const data = await listLibraryGroups();
+        return { ok: true, data };
+      } catch (err) {
+        return { ok: false, error: err.message };
+      }
+    }
+
     case "DOWNLOAD_URL": {
       try {
         setBadgeSaving();
