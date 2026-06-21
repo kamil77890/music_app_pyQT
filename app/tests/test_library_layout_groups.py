@@ -618,6 +618,289 @@ def test_read_library_layout_metadata_mp4_invalid_file_returns_empty(tmp_path):
     assert result == {"library_group": "", "group_id": "", "collection": ""}
 
 
+def test_library_never_becomes_destination_group(tmp_path):
+    from app.logic.local_ai.library_group_rules import fallback_group_for_track, infer_library_group, normalize_key
+
+    track = {
+        "title": "No Genre Track", "artist": "Unknown", "path": str(tmp_path / "noise.mp3"),
+        "genre": "", "style": "", "tags": [], "source_title": "", "videoId": "",
+        "semantic_profile": {
+            "main_genre": "Unknown", "broad_genre": "Unknown",
+            "style_markers": [], "context_markers": [],
+            "performance_type": "studio", "likely_group_theme": "", "theme": "",
+        },
+    }
+
+    fallback = fallback_group_for_track(track)
+    assert normalize_key(fallback) in {"unknown", "library"}, f"fallback was '{fallback}'"
+
+    result = infer_library_group(track)
+    assert result["library_group"] == "", f"Expected empty group, got '{result['library_group']}'"
+    assert result["library_group_source"] == ""
+
+
+def test_legacy_ai_album_names_stripped_by_real_album(tmp_path):
+    from app.logic.local_ai.library_layout_planner import _real_album
+
+    ai_album_names = ["Alternative Rock", "Piano Covers", "Anime Soundtracks", "Pop", "Classical Piano"]
+    for album in ai_album_names:
+        assert _real_album({"album": album, "album_kind": "", "album_source": ""}) == "", (
+            f"'{album}' should be detected as legacy AI album"
+        )
+
+    real_album_names = ["Hybrid Theory", "Meteora", "One More Light", "Random Access Memories"]
+    for album in real_album_names:
+        assert _real_album({"album": album, "album_kind": "", "album_source": ""}) == album, (
+            f"'{album}' should be kept as real album"
+        )
+
+
+def test_duplicate_group_album_hierarchy_collapses(tmp_path):
+    from app.logic.jellyfin_library import sanitize_component
+    from app.logic.local_ai.config import LocalAIConfig
+    from app.logic.local_ai.library_layout_planner import _destination_for_track
+
+    track = {
+        "title": "Song", "artist": "Artist", "album": "Electronic", "path": str(tmp_path / "old" / "song.mp3"),
+        "fileMtime": 1, "fileSize": 100, "genre": "Electronic", "style": "", "tags": [],
+        "source_title": "", "videoId": "", "album_kind": "", "album_source": "",
+    }
+    assignment = {"library_group": "Electronic", "library_group_source": "local_ai"}
+
+    dest = _destination_for_track(track, assignment, music_dir=str(tmp_path))
+    parts = Path(dest).relative_to(tmp_path).parts
+
+    safe_artist = sanitize_component(track["artist"])
+    assert len(parts) == 3, f"Expected 3 parts (group/artist/file), got {parts}"
+    assert parts[0] == "Electronic"
+    assert parts[1] == safe_artist
+    assert parts[2] == "song.mp3"
+
+
+def test_live_video_tracks_merge_to_dominant_group(tmp_path):
+    from app.logic.local_ai.config import LocalAIConfig
+    from app.logic.local_ai.library_layout_planner import plan_library_layout
+
+    base_path = tmp_path / "Linkin Park"
+    paths = {
+        "electronic": base_path / "Electronic",
+        "live": base_path / "Alternative Rock",
+    }
+    for p in paths.values():
+        p.mkdir(parents=True, exist_ok=True)
+
+    electronic1 = paths["electronic"] / "track1.mp3"
+    electronic1.write_bytes(b"audio1")
+    electronic2 = paths["electronic"] / "track2.mp3"
+    electronic2.write_bytes(b"audio2")
+    live_track = paths["live"] / "live_track.mp3"
+    live_track.write_bytes(b"audio3")
+
+    tracks = [
+        {
+            "title": "From The Inside", "artist": "Linkin Park", "path": str(electronic1),
+            "fileMtime": electronic1.stat().st_mtime_ns, "fileSize": electronic1.stat().st_size,
+            "genre": "Electronic", "style": "Electronic", "tags": [], "source_title": "", "videoId": "",
+        },
+        {
+            "title": "The Emptiness Machine", "artist": "Linkin Park", "path": str(electronic2),
+            "fileMtime": electronic2.stat().st_mtime_ns, "fileSize": electronic2.stat().st_size,
+            "genre": "Electronic", "style": "Electronic", "tags": [], "source_title": "", "videoId": "",
+        },
+        {
+            "title": "Cut the Bridge (Live)", "artist": "Linkin Park", "path": str(live_track),
+            "fileMtime": live_track.stat().st_mtime_ns, "fileSize": live_track.stat().st_size,
+            "genre": "Rock", "style": "Electronic", "tags": [], "source_title": "", "videoId": "",
+        },
+    ]
+
+    plan = plan_library_layout(tracks, music_dir=str(tmp_path), config=LocalAIConfig(), use_local_ai=False)
+
+    for group in plan["tree"]:
+        if group["name"] == "Electronic":
+            artist_names = [a["name"] for a in group["artists"]]
+            assert "Linkin Park" in artist_names, "Electronic should contain Linkin Park"
+            lp_artist = next(a for a in group["artists"] if a["name"] == "Linkin Park")
+            assert lp_artist["track_count"] == 3, (
+                f"All 3 Linkin Park tracks should merge to Electronic, got {lp_artist['track_count']}"
+            )
+            break
+    else:
+        pytest.fail("Expected Electronic group in plan tree")
+
+    assert "Library" not in {g["name"] for g in plan["tree"]}, "Library must not appear as a group"
+
+
+def test_insufficient_evidence_creates_conflict(tmp_path):
+    from app.logic.local_ai.config import LocalAIConfig
+    from app.logic.local_ai.library_layout_planner import plan_library_layout
+
+    path = tmp_path / "Unknown" / "Artist" / "noise.mp3"
+    path.parent.mkdir(parents=True)
+    path.write_bytes(b"unknown audio")
+
+    track = {
+        "title": "Noise", "artist": "Mystery", "path": str(path),
+        "fileMtime": path.stat().st_mtime_ns, "fileSize": path.stat().st_size,
+        "genre": "", "style": "", "tags": [], "source_title": "", "videoId": "",
+        "semantic_profile": {
+            "main_genre": "Unknown", "broad_genre": "Unknown",
+            "style_markers": [], "context_markers": [],
+            "performance_type": "studio", "likely_group_theme": "", "theme": "",
+        },
+    }
+
+    plan = plan_library_layout([track], music_dir=str(tmp_path), config=LocalAIConfig(), use_local_ai=False)
+
+    assert len(plan["conflicts"]) >= 1
+    conflict = plan["conflicts"][0]
+    assert conflict["type"] == "insufficient_library_group_evidence"
+    assert "Noise" in conflict["message"]
+    assert "Mystery" in conflict["message"]
+
+    assert len(plan["moves"]) == 0, "No moves should be planned for insufficient evidence"
+    assert len(plan["tree"]) == 0, "No tree entries for tracks without a valid group"
+
+
+def test_legacy_ai_album_not_retained_in_destination(tmp_path):
+    from app.logic.jellyfin_library import sanitize_component
+    from app.logic.local_ai.config import LocalAIConfig
+    from app.logic.local_ai.library_layout_planner import plan_library_layout
+
+    source_dir = tmp_path / "AweSky" / "Anime Soundtracks"
+    source_dir.mkdir(parents=True)
+    mp3 = source_dir / "track.mp3"
+    mp3.write_bytes(b"audio")
+
+    track = {
+        "title": "Middle Of The Night", "artist": "AweSky", "path": str(mp3),
+        "album": "Anime Soundtracks",
+        "fileMtime": mp3.stat().st_mtime_ns, "fileSize": mp3.stat().st_size,
+        "genre": "Soundtrack", "style": "", "tags": ["anime"], "source_title": "", "videoId": "",
+        "album_kind": "", "album_source": "",
+    }
+
+    plan = plan_library_layout([track], music_dir=str(tmp_path), config=LocalAIConfig(), use_local_ai=False)
+
+    safe_artist = sanitize_component(track["artist"])
+    assert len(plan["moves"]) == 1
+    move = plan["moves"][0]
+    to_path = Path(move["to"])
+    parts = to_path.relative_to(tmp_path).parts
+
+    assert parts[0] == "Anime Soundtracks", f"Group should be 'Anime Soundtracks', got {parts}"
+    assert parts[1] == safe_artist, f"Artist should be '{safe_artist}', got {parts}"
+    assert len(parts) == 3, (
+        f"Destination should be group/artist/track (3 parts), got {len(parts)} parts: {parts}"
+    )
+    assert parts[2] == "track.mp3", f"Filename should be 'track.mp3', got {parts[2]}"
+
+
+def test_piano_version_in_title_creates_piano_group_not_conflict(tmp_path):
+    from app.logic.local_ai.config import LocalAIConfig
+    from app.logic.local_ai.library_layout_planner import plan_library_layout
+
+    path = tmp_path / "Grim Cat Piano" / "old_folder" / "track.mp3"
+    path.parent.mkdir(parents=True)
+    path.write_bytes(b"piano audio")
+
+    track = {
+        "title": "I Really Want to Stay At Your House (Piano Version)",
+        "artist": "Grim Cat Piano",
+        "album": "Piano Covers",
+        "path": str(path),
+        "fileMtime": path.stat().st_mtime_ns,
+        "fileSize": path.stat().st_size,
+        "genre": "", "style": "", "tags": [], "source_title": "", "videoId": "",
+        "semantic_profile": {
+            "main_genre": "Unknown", "broad_genre": "Unknown",
+            "style_markers": [], "context_markers": [],
+            "performance_type": "studio", "likely_group_theme": "", "theme": "",
+        },
+    }
+
+    plan = plan_library_layout([track], music_dir=str(tmp_path), config=LocalAIConfig(), use_local_ai=False)
+
+    assert len(plan["conflicts"]) == 0, f"Got unexpected conflicts: {plan['conflicts']}"
+    assert len(plan["moves"]) >= 1
+
+    dest = Path(plan["moves"][0]["to"])
+    parts = dest.relative_to(tmp_path).parts
+    assert parts[0] == "Piano Covers", (
+        f"Expected 'Piano Covers' group, got '{parts[0]}'"
+    )
+    assert "Cyberpunk" not in parts[0], "Group must not contain franchise/title tokens"
+
+
+def test_rock_evidence_in_album_beats_electronic_fallback(tmp_path):
+    from app.logic.jellyfin_library import sanitize_component
+    from app.logic.local_ai.config import LocalAIConfig
+    from app.logic.local_ai.library_layout_planner import plan_library_layout
+
+    paths = {
+        "r1": tmp_path / "Linkin Park" / "Alternative Rock" / "track1.mp3",
+        "r2": tmp_path / "Linkin Park" / "Alternative Rock" / "track2.mp3",
+        "live": tmp_path / "Linkin Park" / "Alternative Rock" / "live.mp3",
+    }
+    for p in paths.values():
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(b"audio")
+
+    tracks = [
+        {
+            "title": "From The Inside (Official Music Video)", "artist": "Linkin Park",
+            "album": "Alternative Rock", "path": str(paths["r1"]),
+            "fileMtime": paths["r1"].stat().st_mtime_ns,
+            "fileSize": paths["r1"].stat().st_size,
+            "genre": "Electronic", "style": "Electronic", "tags": [], "source_title": "", "videoId": "",
+        },
+        {
+            "title": "The Emptiness Machine (Official Music Video)", "artist": "Linkin Park",
+            "album": "Alternative Rock", "path": str(paths["r2"]),
+            "fileMtime": paths["r2"].stat().st_mtime_ns,
+            "fileSize": paths["r2"].stat().st_size,
+            "genre": "Electronic", "style": "", "tags": [], "source_title": "", "videoId": "",
+        },
+        {
+            "title": "Cut the Bridge (Live)", "artist": "Linkin Park",
+            "album": "Alternative Rock", "path": str(paths["live"]),
+            "fileMtime": paths["live"].stat().st_mtime_ns,
+            "fileSize": paths["live"].stat().st_size,
+            "genre": "", "style": "", "tags": [], "source_title": "", "videoId": "",
+        },
+    ]
+
+    plan = plan_library_layout(tracks, music_dir=str(tmp_path), config=LocalAIConfig(), use_local_ai=False)
+
+    assert len(plan["conflicts"]) == 0, f"Got unexpected conflicts: {plan['conflicts']}"
+
+    electronic_groups = [g for g in plan["tree"] if g["name"] == "Electronic"]
+    assert not electronic_groups, "Electronic must not appear as a group for Linkin Park"
+
+    alt_rock_groups = [g for g in plan["tree"] if g["name"] in {"Alternative Rock", "Rock", "Rock-Pop"}]
+    assert alt_rock_groups, f"Expected Alternative Rock/Rock/Rock-Pop in groups, got {[g['name'] for g in plan['tree']]}"
+
+    lp_tracks = sum(
+        a["track_count"]
+        for g in plan["tree"]
+        for a in g["artists"]
+        if a["name"] == "Linkin Park"
+    )
+    assert lp_tracks == 3, f"All 3 Linkin Park tracks should be in one group, got {lp_tracks}"
+
+    safe_artist = sanitize_component(tracks[0]["artist"])
+    for move in plan["moves"]:
+        to_path = Path(move["to"])
+        parts = to_path.relative_to(tmp_path).parts
+        assert len(parts) == 3, (
+            f"Destination should be group/artist/track, got {parts}"
+        )
+        assert parts[1] == safe_artist, (
+            f"Artist path component '{parts[1]}' does not match sanitized '{safe_artist}'"
+        )
+        assert parts[2] in {"track1.mp3", "track2.mp3", "live.mp3"}
+
+
 def test_read_library_layout_metadata_unsupported_ext_returns_empty(tmp_path):
     from app.logic.local_ai.enrichment_service import read_library_layout_metadata
 

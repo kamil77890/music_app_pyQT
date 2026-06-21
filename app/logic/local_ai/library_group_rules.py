@@ -32,6 +32,16 @@ _BANNED_WORDS = {
     "youtube",
 }
 
+_NEVER_GROUP = {
+    "library",
+    "ungrouped",
+    "unknown",
+    "misc",
+    "general",
+    "collection",
+    "collections",
+}
+
 
 def normalize_key(value: Any) -> str:
     return _SPACE_RE.sub(" ", str(value or "").strip().lower())
@@ -48,6 +58,7 @@ def _text_blob(track: dict[str, Any]) -> str:
         track.get("source_title"),
         track.get("sourceTitle"),
         track.get("style"),
+        track.get("album"),
         " ".join(str(tag) for tag in track.get("tags") or []),
         " ".join(str(marker) for marker in profile.get("style_markers") or []),
         " ".join(str(marker) for marker in profile.get("context_markers") or []),
@@ -76,6 +87,37 @@ def _profile_for_track(track: dict[str, Any]) -> dict[str, Any]:
     profile.setdefault("performance_type", "studio")
     profile.setdefault("likely_group_theme", "")
     profile.setdefault("theme", profile.get("likely_group_theme") or "")
+    profile = _augment_profile_from_text(track, profile)
+    return profile
+
+
+_TEXT_STYLE_WORDS = {
+    "piano", "rock", "pop", "electronic", "dance", "classical", "jazz", "metal",
+    "alternative", "acoustic", "ambient", "blues", "funk", "hip", "hop",
+    "rnb", "soul", "reggae", "country", "folk", "indie", "punk", "ska",
+}
+
+_TEXT_CONTEXT_WORDS = {
+    "anime", "soundtrack", "ost", "amv", "opening", "ending",
+}
+
+
+def _augment_profile_from_text(track: dict[str, Any], profile: dict[str, Any]) -> dict[str, Any]:
+    text = _text_blob(track)
+    text_words = _words_in_text(text)
+    existing_styles = {normalize_key(s) for s in profile.get("style_markers") or []}
+    existing_contexts = {normalize_key(c) for c in profile.get("context_markers") or []}
+    added = False
+    for word in text_words:
+        if word in _TEXT_STYLE_WORDS and word not in existing_styles:
+            profile.setdefault("style_markers", []).append(word)
+            existing_styles.add(word)
+            added = True
+    for word in text_words:
+        if word in _TEXT_CONTEXT_WORDS and word not in existing_contexts:
+            profile.setdefault("context_markers", []).append(word)
+            existing_contexts.add(word)
+            added = True
     return profile
 
 
@@ -83,6 +125,7 @@ def fallback_group_for_track(track: dict[str, Any]) -> str:
     profile = _profile_for_track(track)
     if has_nightcore_evidence(track):
         return "Nightcore"
+    profile = _augment_profile_from_text(track, profile)
     if normalize_key(profile.get("main_genre")) == "soundtrack" or normalize_key(profile.get("broad_genre")) == "soundtrack":
         return "Anime Soundtracks"
     return build_group_name_from_cluster([profile])
@@ -114,20 +157,28 @@ def _signal_group_from_candidate(candidate: str, *, track: dict[str, Any]) -> st
     return ""
 
 
+def _is_never_group(name: str) -> bool:
+    return bool(set(normalize_key(name).split()) & _NEVER_GROUP)
+
+
 def normalize_library_group_candidate(candidate: str, *, track: dict[str, Any]) -> str:
     if has_nightcore_evidence(track):
         return "Nightcore"
 
     fallback = fallback_group_for_track(track)
+    if _is_never_group(fallback):
+        fallback = ""
     cleaned = normalize_key(candidate)
     words = cleaned.split()
     artist = normalize_key(track.get("artist"))
     title = normalize_key(track.get("title"))
     signal_group = _signal_group_from_candidate(candidate, track=track)
 
-    if signal_group:
+    if signal_group and not _is_never_group(signal_group):
         return signal_group
     if not cleaned or len(words) > 3:
+        return fallback
+    if set(words) & _NEVER_GROUP:
         return fallback
     if set(words) & _BANNED_WORDS:
         return fallback
@@ -137,16 +188,29 @@ def normalize_library_group_candidate(candidate: str, *, track: dict[str, Any]) 
         return fallback
     if cleaned != normalize_key(fallback):
         return fallback
-    return _title_case(cleaned)
+    result = _title_case(cleaned)
+    if _is_never_group(result):
+        return fallback
+    return result
 
 
 def infer_library_group(track: dict[str, Any]) -> dict[str, Any]:
     group = normalize_library_group_candidate(fallback_group_for_track(track), track=track)
     return {
         "library_group": group,
-        "library_group_source": "deterministic" if group == "Nightcore" else "local_ai",
+        "library_group_source": "deterministic" if group == "Nightcore" else "" if not group else "local_ai",
         "library_group_confidence": 0.9 if group == "Nightcore" else float(track.get("classification_confidence") or 0.6),
     }
+
+
+def _is_format_marker_group(group: str) -> bool:
+    words = set(normalize_key(group).split())
+    return bool(words & {"live", "video", "lyrics", "amv", "animated", "op", "ed", "opening", "ending"})
+
+
+def _is_unstable_group(group: str) -> bool:
+    words = set(normalize_key(group).split())
+    return bool(words & {"electronic", "unknown", "music", "library", "misc", "general", "collection", "dance"})
 
 
 def apply_artist_dominant_groups(
@@ -168,18 +232,16 @@ def apply_artist_dominant_groups(
         group, count = sorted(counter.items(), key=lambda item: (-item[1], item[0]))[0]
         if count > total / 2:
             dominant[artist] = group
+
     merged: dict[str, dict[str, Any]] = {}
     for key, assignment in assignments.items():
         track = tracks_by_key[key]
         artist = normalize_key(track.get("artist"))
         group = str(assignment.get("library_group") or "")
-        if group != "Nightcore" and artist in dominant and _is_weak_or_context_group(group):
+        if group == "Nightcore":
+            merged[key] = dict(assignment)
+        elif artist in dominant and group != dominant[artist]:
             merged[key] = {**assignment, "library_group": dominant[artist], "library_group_source": "artist_dominant"}
         else:
             merged[key] = dict(assignment)
     return merged
-
-
-def _is_weak_or_context_group(group: str) -> bool:
-    words = set(normalize_key(group).split())
-    return bool(words & {"live", "video", "lyrics", "amv", "electronic", "unknown", "music"})

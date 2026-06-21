@@ -67,6 +67,16 @@ def _safe_layout_path(music_dir: str, *parts: str) -> Path:
     return destination
 
 
+def _is_ai_generated_album_name(name: str) -> bool:
+    known = {
+        "nightcore", "anime piano", "piano covers", "anime soundtracks",
+        "alternative rock", "pop rock", "pop", "electronic", "classical piano",
+        "library", "anime piano covers", "rock", "metal", "dance",
+        "electronic covers", "classical", "piano",
+    }
+    return normalize_key(name) in known
+
+
 def _real_album(track: dict[str, Any]) -> str:
     album = str(track.get("album") or "").strip()
     album_kind = normalize_key(track.get("album_kind"))
@@ -77,14 +87,21 @@ def _real_album(track: dict[str, Any]) -> str:
         return ""
     if album_source in {"local_ai", "registry", "pending_grouping", "ai_managed"} and album_kind != "official_or_existing":
         return ""
+    if _is_ai_generated_album_name(album):
+        return ""
     return album
 
 
 def _destination_for_track(track: dict[str, Any], assignment: dict[str, Any], *, music_dir: str) -> str:
     source = Path(_source_path(track))
     filename = source.name or sanitize_component(str(track.get("title") or "track"))
-    album = "" if normalize_key(assignment["library_group"]) == "nightcore" else _real_album(track)
-    parts = [assignment["library_group"], str(track.get("artist") or "Unknown Artist").strip() or "Unknown Artist"]
+    group_name = str(assignment["library_group"])
+    album = ""
+    if normalize_key(group_name) != "nightcore":
+        album = _real_album(track)
+        if album and normalize_key(album) == normalize_key(group_name):
+            album = ""
+    parts = [group_name, str(track.get("artist") or "Unknown Artist").strip() or "Unknown Artist"]
     if album:
         parts.append(album)
     parts.append(filename)
@@ -138,12 +155,25 @@ def plan_library_layout(
     moves: list[dict[str, Any]] = []
     metadata_ops: list[dict[str, Any]] = []
     fingerprints: list[dict[str, Any]] = []
+    conflicts: list[str] = []
 
     for key, track in tracks_by_key.items():
         assignment = assignments[key]
         group_name = str(assignment["library_group"])
         artist = str(track.get("artist") or "Unknown Artist").strip() or "Unknown Artist"
         source = _source_path(track)
+
+        if not group_name:
+            conflicts.append({
+                "type": "insufficient_library_group_evidence",
+                "track_key": key,
+                "path": source,
+                "artist": artist,
+                "title": track.get("title") or "",
+                "message": f"No valid library group could be determined for track '{track.get('title') or ''}' by {artist}",
+            })
+            continue
+
         destination = _destination_for_track(track, assignment, music_dir=music_dir)
 
         if source and str(Path(source).resolve()) != str(Path(destination).resolve(strict=False)):
@@ -189,7 +219,7 @@ def plan_library_layout(
         "moves": sorted(moves, key=lambda item: (item["to"], item["from"])),
         "metadata_operations": sorted(metadata_ops, key=lambda item: item["track_key"]),
         "fingerprints": sorted(fingerprints, key=lambda item: item["track_key"]),
-        "conflicts": [],
+        "conflicts": sorted(conflicts, key=lambda item: (item.get("artist", ""), item.get("track_key", ""))),
     }
     plan["plan_id"] = compute_plan_id(plan)
     return plan
@@ -502,7 +532,11 @@ def format_layout_plan_tree(plan: dict[str, Any]) -> str:
             lines.append(f"  Artist: {artist.get('name')} ({artist.get('track_count')} tracks)")
     lines.append("Conflicts:")
     if plan.get("conflicts"):
-        lines.extend(f"  - {conflict}" for conflict in plan["conflicts"])
+        for conflict in plan["conflicts"]:
+            if isinstance(conflict, dict):
+                lines.append(f"  - [{conflict.get('type', 'unknown')}] {conflict.get('message', '')}")
+            else:
+                lines.append(f"  - {conflict}")
     else:
         lines.append("  none")
     lines.append("Move preview:")

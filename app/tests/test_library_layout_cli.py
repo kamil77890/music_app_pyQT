@@ -36,7 +36,7 @@ def test_plan_library_layout_dispatches_without_enrichment(monkeypatch, tmp_path
     cli = _load_cli_module()
     music_dir = tmp_path / "music"
     music_dir.mkdir()
-    args = SimpleNamespace(plan_library_layout=True, limit=1)
+    args = SimpleNamespace(plan_library_layout=True, limit=1, use_local_ai=False)
     calls: dict[str, object] = {}
     config = SimpleNamespace(model="test-model")
 
@@ -44,7 +44,7 @@ def test_plan_library_layout_dispatches_without_enrichment(monkeypatch, tmp_path
     monkeypatch.setattr(cli, "scan_music_files", lambda path: [{"title": "Song", "artist": "Artist", "path": str(music_dir / "song.mp3")}, {"title": "Extra"}])
     monkeypatch.setitem(sys.modules, "app.logic.local_ai.config", SimpleNamespace(get_config=lambda: config))
 
-    def fake_plan_library_layout(songs, *, music_dir, config):
+    def fake_plan_library_layout(songs, *, music_dir, config, use_local_ai=False):
         calls["songs"] = songs
         calls["music_dir"] = music_dir
         calls["config"] = config

@@ -66,7 +66,7 @@ def _run_library_layout_plan(args: argparse.Namespace) -> int:
     songs = scan_music_files(lib_dir)
     if args.limit:
         songs = songs[: args.limit]
-    plan = plan_library_layout(songs, music_dir=lib_dir, config=config)
+    plan = plan_library_layout(songs, music_dir=lib_dir, config=config, use_local_ai=args.use_local_ai)
     saved_path = save_layout_plan(plan)
     output = {"plan_id": plan["plan_id"], "saved_to": str(saved_path)}
     print(json.dumps(output, ensure_ascii=False, indent=2))
