@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -19,6 +20,9 @@ _models: dict[str, genai.GenerativeModel] = {}
 
 # In-memory response cache to avoid re-spending tokens on identical prompts.
 _GEMINI_CACHE_TTL = int(os.environ.get("GEMINI_CACHE_TTL_SECONDS", "21600"))  # 6h
+
+# Hard ceiling per Gemini call so a stalled connection cannot hang a request.
+_GEMINI_TIMEOUT_SECONDS = float(os.environ.get("GEMINI_TIMEOUT_SECONDS", "20"))
 _cache: dict[str, tuple[float, object]] = {}
 
 
@@ -91,7 +95,10 @@ async def generate_json(
     for _ in range(attempts):
         try:
             model = _get_model(temperature)
-            res = await model.generate_content_async(prompt)
+            res = await asyncio.wait_for(
+                model.generate_content_async(prompt),
+                timeout=_GEMINI_TIMEOUT_SECONDS,
+            )
             raw = _strip_json_fences(res.text or "")
             parsed = json.loads(raw)
             if use_cache:

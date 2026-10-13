@@ -1,4 +1,6 @@
+import asyncio
 import logging
+import os
 from typing import Literal, Optional
 
 from fastapi import APIRouter, HTTPException, Query
@@ -21,6 +23,13 @@ router = APIRouter(tags=["Recommendations"])
 log = logging.getLogger(__name__)
 
 Mode = Literal["focus", "discover", "fresh"]
+
+# Upper bound for the heavy advanced pipeline. When it exceeds this we serve the
+# (instant) precomputed feed instead of letting the request hang until the phone
+# gives up with "endpoint rekomendacji nie odpowiedział".
+_ADVANCED_TIMEOUT_SECONDS = float(
+    os.environ.get("ADVANCED_RECOMMENDATIONS_TIMEOUT_SECONDS", "25")
+)
 
 
 class ReferencePlaylistRequest(BaseModel):
@@ -130,14 +139,36 @@ async def get_advanced_recommendations(
         raise HTTPException(404, "playlist empty")
 
     try:
-        result = await run_advanced_pipeline(
-            max_results=max_results,
-            seed_video_id=seed_video_id,
-            mode=mode,
-            use_llm_rerank=use_llm_rerank,
-            max_per_channel=max_per_channel,
-            debug_scores=debug_scores,
+        result = await asyncio.wait_for(
+            run_advanced_pipeline(
+                max_results=max_results,
+                seed_video_id=seed_video_id,
+                mode=mode,
+                use_llm_rerank=use_llm_rerank,
+                max_per_channel=max_per_channel,
+                debug_scores=debug_scores,
+            ),
+            timeout=_ADVANCED_TIMEOUT_SECONDS,
         )
+    except asyncio.TimeoutError:
+        log.warning(
+            "Advanced recommendations exceeded %.0fs — serving the cached feed instead",
+            _ADVANCED_TIMEOUT_SECONDS,
+        )
+        from app.logic.recommendations.recommendation_feed import get_feed
+
+        feed = get_feed(limit=max_results)
+        return {
+            "success": True,
+            "cached": True,
+            "fallback": "feed",
+            "profile": feed.get("profile") or {"source": "recommendation_feed"},
+            "data": {
+                "songs": feed.get("items", []),
+                "playlist": [],
+                "nextPageToken": None,
+            },
+        }
     except (YouTubeQuotaExceededError, YouTubeAccessDeniedError, YouTubeNotFoundError, YouTubeAPIError) as e:
         _raise_youtube_error(e)
     except SQLAlchemyError as e:
